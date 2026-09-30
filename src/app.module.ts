@@ -4,8 +4,10 @@ import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -15,9 +17,15 @@ import { PrismaModule } from './prisma/prisma.module';
       load: [configuration],
       validate: validateEnv,
       expandVariables: true,
-      envFilePath: [`.env.${process.env.NODE_ENV}`, '.env'],
+      envFilePath: [
+        `.env.${process.env.NODE_ENV}.local`,
+        `.env.${process.env.NODE_ENV}`,
+        '.env',
+      ],
     }),
     PrismaModule,
+    UsersModule,
+    AuthModule,
     HealthModule,
   ],
   controllers: [AppController],

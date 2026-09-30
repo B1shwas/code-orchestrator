@@ -29,8 +29,18 @@ export const envValidationSchema = Joi.object({
     .allow('')
     .default('Production-grade NestJS API (WhyCODE)'),
   SWAGGER_VERSION: Joi.string().default('1.0'),
-  GITHUB_CLIENT_ID: Joi.string(),
-  GITHUB_CLIENT_SECRET: Joi.string(),
+  GITHUB_CLIENT_ID: Joi.string().required(),
+  GITHUB_CLIENT_SECRET: Joi.string().required(),
+  GITHUB_CALLBACK_URL: Joi.string().uri().required(),
+  GITHUB_SCOPE: Joi.string().default('read:user user:email repo'),
+  FRONTEND_URL: Joi.string().uri().default('http://localhost:3000'),
+  JWT_SECRET: Joi.string().min(32).required(),
+  JWT_EXPIRES_IN: Joi.string().default('7d'),
+  TOKEN_ENCRYPTION_KEY: Joi.string()
+    .length(64)
+    .hex()
+    .required()
+    .description('32-byte hex key for AES-256-GCM token encryption'),
 });
 
 export type EnvVariables = {
@@ -49,6 +59,12 @@ export type EnvVariables = {
   SWAGGER_VERSION: string;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
+  GITHUB_CALLBACK_URL: string;
+  GITHUB_SCOPE: string;
+  FRONTEND_URL: string;
+  JWT_SECRET: string;
+  JWT_EXPIRES_IN: string;
+  TOKEN_ENCRYPTION_KEY: string;
 };
 
 export function validateEnv(config: Record<string, unknown>) {

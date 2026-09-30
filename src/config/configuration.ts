@@ -22,5 +22,15 @@ export default () => ({
   github: {
     clientId: process.env.GITHUB_CLIENT_ID ?? '',
     clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
+    callbackUrl: process.env.GITHUB_CALLBACK_URL ?? '',
+    scope: process.env.GITHUB_SCOPE ?? 'read:user user:email repo',
+    frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET ?? '',
+    expiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  },
+  tokens: {
+    encryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? '',
   },
 });

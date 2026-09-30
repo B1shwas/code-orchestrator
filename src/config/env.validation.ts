@@ -15,6 +15,13 @@ export const envValidationSchema = Joi.object({
     .description(
       'Postgres connection string, e.g. postgresql://user:password@localhost:5432/whycode?schema=public',
     ),
+  SHADOW_DATABASE_URL: Joi.string()
+    .uri({ scheme: ['postgres', 'postgresql'] })
+    .allow('')
+    .optional()
+    .description(
+      'Scratch DB for `prisma migrate diff/dev` planning only; never used at runtime',
+    ),
   SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').default(true),
   SWAGGER_PATH: Joi.string().default('docs'),
   SWAGGER_TITLE: Joi.string().default('WhyCODE API'),
@@ -22,6 +29,8 @@ export const envValidationSchema = Joi.object({
     .allow('')
     .default('Production-grade NestJS API (WhyCODE)'),
   SWAGGER_VERSION: Joi.string().default('1.0'),
+  GITHUB_CLIENT_ID: Joi.string(),
+  GITHUB_CLIENT_SECRET: Joi.string(),
 });
 
 export type EnvVariables = {
@@ -32,14 +41,16 @@ export type EnvVariables = {
   RATE_LIMIT_TTL: number;
   RATE_LIMIT_MAX: number;
   DATABASE_URL: string;
+  SHADOW_DATABASE_URL?: string;
   SWAGGER_ENABLED: boolean;
   SWAGGER_PATH: string;
   SWAGGER_TITLE: string;
   SWAGGER_DESCRIPTION: string;
   SWAGGER_VERSION: string;
+  GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
 };
 
-// Compatible with @nestjs/config v12+ `validate` option
 export function validateEnv(config: Record<string, unknown>) {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   const { error, value } = envValidationSchema.validate(config, {

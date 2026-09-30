@@ -7,11 +7,77 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
+  id          String  @id @default(uuid())
+  githubId    String  @unique
+  email       String?
+  name        String?
+  avatarUrl   String?
+  githubToken String
+
+  repositories   Repository[]
+  investigations Investigation[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("users")
+}
+
+model Repository {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  githubRepoId  Int
+  owner         String
+  name          String
+  cloneUrl      String
+  defaultBranch String @default("main")
+
+  localPath String
+  status    RepoStatus @default(PENDING)
+
+  investigations Investigation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([owner, name])
+  @@map("repositories")
+}
+
+enum RepoStatus {
+  PENDING
+  CLONING
+  READY
+  ERROR
+}
+
+model Investigation {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositoryId String
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  query        String
+  targetFile   String?
+  targetSymbol String?
+
+  status      InvestigationStatus @default(PENDING)
+  evidence    Json?
+  llmResponse String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("investigations")
+}
+
+enum InvestigationStatus {
+  PENDING
+  GATHERING_EVIDENCE
+  ANALYZING
+  COMPLETED
+  FAILED
 }

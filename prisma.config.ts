@@ -3,6 +3,8 @@ import { defineConfig, env } from 'prisma/config';
 
 // Prisma 7+: datasource URL lives here, not in schema.prisma.
 // Reads DATABASE_URL validated by Joi at Nest boot.
+// shadowDatabaseUrl is used only by `migrate diff` / `migrate dev`
+// (scratch DB for planning); never touched at runtime.
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
@@ -10,5 +12,6 @@ export default defineConfig({
   },
   datasource: {
     url: env('DATABASE_URL'),
+    shadowDatabaseUrl: env('SHADOW_DATABASE_URL'),
   },
 });

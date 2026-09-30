@@ -19,4 +19,8 @@ export default () => ({
       'Production-grade NestJS API (WhyCODE)',
     version: process.env.SWAGGER_VERSION ?? '1.0',
   },
+  github: {
+    clientId: process.env.GITHUB_CLIENT_ID ?? '',
+    clientSecret: process.env.GITHUB_CLIENT_SECRET ?? '',
+  },
 });

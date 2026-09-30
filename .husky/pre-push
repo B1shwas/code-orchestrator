@@ -1,0 +1,7 @@
+set -e
+npm run lint:check
+npm run format:check
+npm run typecheck
+npm run audit:check
+npm test -- --passWithNoTests
+npm run build

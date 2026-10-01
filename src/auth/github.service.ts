@@ -2,6 +2,7 @@ import {
   BadGatewayException,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -19,6 +20,24 @@ export type GithubProfile = {
   name: string | null;
   email: string | null;
   avatarUrl: string | null;
+};
+
+export type GithubApiRepoRaw = {
+  id: number;
+  name: string;
+  private?: boolean;
+  default_branch?: string | null;
+  owner?: { login?: string } | null;
+  clone_url?: string;
+};
+
+export type GithubRepoDetail = {
+  githubRepoId: number;
+  owner: string;
+  name: string;
+  private: boolean;
+  cloneUrl: string;
+  defaultBranch: string;
 };
 
 const GITHUB_OAUTH_URL = 'https://github.com/login/oauth/access_token';
@@ -111,6 +130,61 @@ export class GithubService {
     }
     if (!res.ok) return [];
     const data = (await res.json()) as GithubEmail[];
+    return Array.isArray(data) ? data : [];
+  }
+
+  async getRepo(
+    accessToken: string,
+    owner: string,
+    name: string,
+  ): Promise<GithubRepoDetail> {
+    let res: Response;
+    try {
+      res = await fetch(`${GITHUB_API}/repos/${owner}/${name}`, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${accessToken}`,
+          'User-Agent': 'WhyCODE',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+    } catch {
+      this.logger.error(`GitHub API network error (/repos/${owner}/${name})`);
+      throw new BadGatewayException('GitHub API unreachable');
+    }
+    if (res.status === 404) throw new NotFoundException('Repository not found');
+    if (res.status === 401)
+      throw new UnauthorizedException('Invalid GitHub token');
+    if (!res.ok) {
+      this.logger.warn(`GitHub API /repos/${owner}/${name} -> ${res.status}`);
+      throw new BadGatewayException('GitHub API request failed');
+    }
+    const data = (await res.json()) as GithubApiRepoRaw;
+
+    return {
+      githubRepoId: data.id,
+      owner: data.owner?.login ?? owner,
+      name: data.name,
+      cloneUrl: data.clone_url ?? `https://github.com/${owner}/${name}.git`,
+      defaultBranch: data.default_branch ?? 'main',
+      private: data.private ?? false,
+    };
+  }
+
+  async listUserRepos(
+    accessToken: string,
+    page = 1,
+    perPage = 30,
+  ): Promise<GithubApiRepoRaw[]> {
+    const params = new URLSearchParams({
+      per_page: String(perPage),
+      page: String(page),
+      affiliation: 'owner,collaborator,organization_member',
+      sort: 'updated',
+    });
+
+    const res = await this.authedGet(`/user/repos?${params}`, accessToken);
+    const data = (await res.json()) as GithubApiRepoRaw[];
     return Array.isArray(data) ? data : [];
   }
 

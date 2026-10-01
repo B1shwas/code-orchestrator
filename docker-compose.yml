@@ -6,12 +6,7 @@ services:
     ports:
       - '3000:3000'
     env_file:
-      - .env.development
-    # For Docker Desktop, override localhost with host.docker.internal via env,
-    # e.g. DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/whycode?schema=public
-    # (kept as interpolation so no credentials are hardcoded in git).
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/whycode?schema=public}
+      - .env.development.local
     volumes:
       - ./src:/app/src
     extra_hosts:

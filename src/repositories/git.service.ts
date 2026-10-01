@@ -1,6 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { execFile } from 'node:child_process';
+import { access, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { promisify } from 'node:util';
 import { join } from 'path';
+
+const execFileAsync = promisify(execFile);
+const CLONE_TIMEOUT_MS = 120_000;
 
 @Injectable()
 export class GitService {
@@ -16,19 +23,36 @@ export class GitService {
     return join(base, safeOwner, safeName);
   }
 
-  isCloned(localPath: string): Promise<boolean> {
-    void localPath;
-    return Promise.reject(new Error('Not implemented'));
+  async isCloned(localPath: string): Promise<boolean> {
+    try {
+      await access(join(localPath, '.git'));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  clone(
+  async clone(
     authedCloneUrl: string,
     localPath: string,
     branch?: string,
   ): Promise<void> {
-    void authedCloneUrl;
-    void localPath;
-    void branch;
-    return Promise.reject(new Error('Not implemented'));
+    await mkdir(dirname(localPath), { recursive: true });
+    const args = ['clone', '--depth', '1'];
+    if (branch) {
+      args.push('--branch', branch);
+    }
+
+    args.push(authedCloneUrl, localPath);
+
+    try {
+      await execFileAsync('git', args, { timeout: CLONE_TIMEOUT_MS });
+    } catch (err) {
+      const message = (err as Error).message.replace(
+        /x-access-token:[^@]+@/g,
+        'x-access-token:<redacted>@',
+      );
+      throw new Error(`git clone failed: ${message}`);
+    }
   }
 }

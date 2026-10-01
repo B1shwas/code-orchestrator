@@ -33,4 +33,8 @@ export default () => ({
   tokens: {
     encryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? '',
   },
+  repos: {
+    basePath: process.env.REPOS_BASE_PATH ?? './data/repos',
+    cloneTimeoutMs: parseInt(process.env.GIT_CLONE_TIMEOUT_MS ?? '120000', 10),
+  },
 });

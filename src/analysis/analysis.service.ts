@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { readdir, realpath, stat, open } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveWithin } from './utils/path-safety.util';
 import { parseGrepOutput } from './utils/grep-parser.util';
@@ -22,23 +23,65 @@ const execFileAsync = promisify(execFile);
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage']);
 const DEFAULT_DEPTH = 2;
-const MAX_DEPTH = 5;
 const DEFAULT_LIMIT = 100;
-const MAX_LIMIT = 200;
 
-const MAX_FILE_BYTES = 256 * 1024;
-const HARD_MAX_BYTES = 10 * 1024 * 1024;
 const SNIFF_LEN = 8000;
-
-const SEARCH_TIMEOUT_MS = 15_000;
 const SEARCH_MAX_BUFFER_BYTES = 1024 * 1024;
-const DEFAULT_SEARCH_LIMIT = 50;
-const MAX_SEARCH_LIMIT = 100;
 const MAX_QUERY_LEN = 200;
+const DEFAULT_SEARCH_LIMIT = 50;
+
+const DEFAULT_MAX_TREE_DEPTH = 5;
+const DEFAULT_MAX_TREE_ENTRIES = 200;
+const DEFAULT_MAX_FILE_BYTES = 256 * 1024;
+const DEFAULT_HARD_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_SEARCH_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_SEARCH_RESULTS = 100;
 
 @Injectable()
 export class AnalysisService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
+
+  private maxTreeDepth(): number {
+    return (
+      this.config.get<number>('analysis.maxTreeDepth') ?? DEFAULT_MAX_TREE_DEPTH
+    );
+  }
+
+  private maxTreeEntries(): number {
+    return (
+      this.config.get<number>('analysis.maxTreeEntries') ??
+      DEFAULT_MAX_TREE_ENTRIES
+    );
+  }
+
+  private maxFileBytes(): number {
+    return (
+      this.config.get<number>('analysis.maxFileBytes') ?? DEFAULT_MAX_FILE_BYTES
+    );
+  }
+
+  private hardMaxBytes(): number {
+    return (
+      this.config.get<number>('analysis.hardMaxBytes') ?? DEFAULT_HARD_MAX_BYTES
+    );
+  }
+
+  private searchTimeoutMs(): number {
+    return (
+      this.config.get<number>('analysis.searchTimeoutMs') ??
+      DEFAULT_SEARCH_TIMEOUT_MS
+    );
+  }
+
+  private maxSearchResults(): number {
+    return (
+      this.config.get<number>('analysis.maxSearchResults') ??
+      DEFAULT_MAX_SEARCH_RESULTS
+    );
+  }
 
   async listTree(
     userId: string,
@@ -59,8 +102,8 @@ export class AnalysisService {
     if (link.repository.status !== 'READY')
       throw new BadRequestException('Repository is not ready');
 
-    const safeDepth = Math.min(Math.max(depth, 1), MAX_DEPTH);
-    const safeLimit = Math.min(Math.max(1, limit), MAX_LIMIT);
+    const safeDepth = Math.min(Math.max(depth, 1), this.maxTreeDepth());
+    const safeLimit = Math.min(Math.max(1, limit), this.maxTreeEntries());
 
     const root = resolveWithin(link.repository.localPath, subPath);
 
@@ -147,7 +190,7 @@ export class AnalysisService {
 
     const s = await stat(real);
     if (!s.isFile()) throw new BadRequestException('Not a file');
-    if (s.size > HARD_MAX_BYTES) {
+    if (s.size > this.hardMaxBytes()) {
       throw new PayloadTooLargeException('File too large');
     }
 
@@ -165,13 +208,13 @@ export class AnalysisService {
           content: null,
         };
       }
-      const readLen = Math.min(s.size, MAX_FILE_BYTES);
+      const readLen = Math.min(s.size, this.maxFileBytes());
       const buf = Buffer.alloc(readLen);
       if (readLen > 0) await fh.read(buf, 0, readLen, 0);
       return {
         path: rel,
         size: s.size,
-        truncated: s.size > MAX_FILE_BYTES,
+        truncated: s.size > this.maxFileBytes(),
         binary: false,
         content: buf.toString('utf8'),
       };
@@ -201,7 +244,7 @@ export class AnalysisService {
       throw new ConflictException('Repository is not ready yet');
     }
 
-    const safeLimit = Math.min(Math.max(1, limit), MAX_SEARCH_LIMIT);
+    const safeLimit = Math.min(Math.max(1, limit), this.maxSearchResults());
     try {
       const { stdout } = await execFileAsync(
         'git',
@@ -223,7 +266,10 @@ export class AnalysisService {
           ':!dist',
           ':!coverage',
         ],
-        { timeout: SEARCH_TIMEOUT_MS, maxBuffer: SEARCH_MAX_BUFFER_BYTES },
+        {
+          timeout: this.searchTimeoutMs(),
+          maxBuffer: SEARCH_MAX_BUFFER_BYTES,
+        },
       );
       return parseGrepOutput(stdout, safeLimit);
     } catch (err) {

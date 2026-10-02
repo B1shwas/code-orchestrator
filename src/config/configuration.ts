@@ -37,4 +37,24 @@ export default () => ({
     basePath: process.env.REPOS_BASE_PATH ?? './data/repos',
     cloneTimeoutMs: parseInt(process.env.GIT_CLONE_TIMEOUT_MS ?? '120000', 10),
   },
+  analysis: {
+    maxTreeDepth: parseInt(process.env.ANALYSIS_MAX_TREE_DEPTH ?? '5', 10),
+    maxTreeEntries: parseInt(
+      process.env.ANALYSIS_MAX_TREE_ENTRIES ?? '200',
+      10,
+    ),
+    maxFileBytes: parseInt(process.env.ANALYSIS_MAX_FILE_BYTES ?? '262144', 10),
+    hardMaxBytes: parseInt(
+      process.env.ANALYSIS_HARD_MAX_BYTES ?? '10485760',
+      10,
+    ),
+    searchTimeoutMs: parseInt(
+      process.env.ANALYSIS_SEARCH_TIMEOUT_MS ?? '15000',
+      10,
+    ),
+    maxSearchResults: parseInt(
+      process.env.ANALYSIS_MAX_SEARCH_RESULTS ?? '100',
+      10,
+    ),
+  },
 });

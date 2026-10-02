@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { AnalysisService } from './analysis.service';
@@ -20,6 +21,7 @@ describe('AnalysisService', () => {
           provide: PrismaService,
           useValue: { userRepository: { findUnique } },
         },
+        { provide: ConfigService, useValue: { get: () => undefined } },
       ],
     }).compile();
 

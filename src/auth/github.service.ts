@@ -170,27 +170,10 @@ export class GithubService {
     owner: string,
     name: string,
   ): Promise<GithubRepoDetail> {
-    let res: Response;
-    try {
-      res = await fetch(`${GITHUB_API}/repos/${owner}/${name}`, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${accessToken}`,
-          'User-Agent': 'WhyCODE',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      });
-    } catch {
-      this.logger.error(`GitHub API network error (/repos/${owner}/${name})`);
-      throw new BadGatewayException('GitHub API unreachable');
-    }
+    const res = await this.authedGet(`/repos/${owner}/${name}`, accessToken, {
+      allowNotFound: true,
+    });
     if (res.status === 404) throw new NotFoundException('Repository not found');
-    if (res.status === 401)
-      throw new UnauthorizedException('Invalid GitHub token');
-    if (!res.ok) {
-      this.logger.warn(`GitHub API /repos/${owner}/${name} -> ${res.status}`);
-      throw new BadGatewayException('GitHub API request failed');
-    }
     const data = (await res.json()) as GithubApiRepoRaw;
 
     return {
@@ -253,9 +236,99 @@ export class GithubService {
       }));
   }
 
+  async getCommitDetail(
+    accessToken: string,
+    owner: string,
+    name: string,
+    sha: string,
+  ): Promise<GithubCommitDetail> {
+    const res = await this.authedGet(
+      `/repos/${owner}/${name}/commits/${sha}`,
+      accessToken,
+      { allowNotFound: true },
+    );
+    if (res.status === 404) throw new NotFoundException('Commit not found');
+    const data = (await res.json()) as {
+      sha?: string;
+      commit?: {
+        message?: string;
+        author?: { name?: string; date?: string } | null;
+      };
+      files?: { filename?: string; patch?: string }[];
+    };
+    const files = Array.isArray(data.files) ? data.files : [];
+    return {
+      sha: data.sha ?? sha,
+      message: data.commit?.message ?? '',
+      author: data.commit?.author?.name ?? null,
+      date: data.commit?.author?.date ?? null,
+      files: files
+        .filter((f) => typeof f.filename === 'string')
+        .map((f) => ({
+          path: f.filename as string,
+          // patches can be huge; binary/oversize files carry no patch at all
+          patch: (f.patch ?? '').split('\n').slice(0, 200).join('\n'),
+        })),
+    };
+  }
+
+  async getCommitPRs(
+    accessToken: string,
+    owner: string,
+    name: string,
+    sha: string,
+  ): Promise<GithubPR[]> {
+    const res = await this.authedGet(
+      `/repos/${owner}/${name}/commits/${sha}/pulls`,
+      accessToken,
+      { allowNotFound: true },
+    );
+    // No associated PR (direct push, old history) is normal, not failure.
+    if (res.status === 404) return [];
+    const data = (await res.json()) as {
+      number?: number;
+      title?: string;
+      body?: string | null;
+    }[];
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((pr) => typeof pr.number === 'number')
+      .map((pr) => ({
+        number: pr.number as number,
+        title: pr.title ?? '',
+        body: (pr.body ?? null)?.slice(0, 500) ?? null,
+      }));
+  }
+
+  async getIssue(
+    accessToken: string,
+    owner: string,
+    name: string,
+    issueNumber: number,
+  ): Promise<GithubIssue> {
+    const res = await this.authedGet(
+      `/repos/${owner}/${name}/issues/${issueNumber}`,
+      accessToken,
+    );
+    const data = (await res.json()) as {
+      number?: number;
+      title?: string;
+      body?: string | null;
+    };
+    if (typeof data.number !== 'number') {
+      throw new BadGatewayException('GitHub API request failed');
+    }
+    return {
+      number: data.number,
+      title: data.title ?? '',
+      body: (data.body ?? null)?.slice(0, 500) ?? null,
+    };
+  }
+
   private async authedGet(
     path: string,
     accessToken: string,
+    options?: { allowNotFound?: boolean },
   ): Promise<Response> {
     let res: Response;
     try {
@@ -273,6 +346,9 @@ export class GithubService {
     }
     if (res.status === 401)
       throw new UnauthorizedException('Invalid GitHub token');
+    // callers that distinguish "missing" from "broken" (commit detail,
+    // PR lookup) opt into receiving the 404 and decide themselves.
+    if (res.status === 404 && options?.allowNotFound) return res;
     if (!res.ok) {
       this.logger.warn(`GitHub API ${path} -> ${res.status}`);
       throw new BadGatewayException('GitHub API request failed');

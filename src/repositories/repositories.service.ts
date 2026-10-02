@@ -1,6 +1,8 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
   UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,13 +19,30 @@ import { GithubService } from '../auth/github.service';
 import { UsersService } from '../users/users.service';
 
 @Injectable()
-export class RepositoriesService {
+export class RepositoriesService implements OnModuleInit {
+  private readonly logger = new Logger(RepositoriesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly git: GitService,
     private readonly users: UsersService,
     private readonly github: GithubService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // Clones run as in-process promises, so any CLONING row at boot is
+    // stale by definition — the worker died with the previous process.
+    // Re-queue as PENDING; the next connect/retry claims and clones it.
+    const stale = await this.prisma.repository.updateMany({
+      where: { status: 'CLONING' },
+      data: { status: 'PENDING', errorMessage: null },
+    });
+    if (stale.count > 0) {
+      this.logger.warn(
+        `Re-queued ${stale.count} repositories stuck in CLONING`,
+      );
+    }
+  }
 
   async listGithubRepos(
     userId: string,

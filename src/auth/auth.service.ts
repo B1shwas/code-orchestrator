@@ -97,6 +97,36 @@ export class AuthService {
     return user;
   }
 
+  /**
+   * Browser landing URL carrying the fresh session.
+   * The frontend /auth/callback page completes login from these params.
+   */
+  frontendCallbackUrl(login: LoginResult): string {
+    const params = new URLSearchParams({
+      accessToken: login.accessToken,
+      user: JSON.stringify(login.user),
+    });
+    return `${this.frontendBase()}/auth/callback?${params.toString()}`;
+  }
+
+  /**
+   * Browser landing URL for a failed OAuth round-trip.
+   * The frontend /auth/callback page renders the error from these params.
+   */
+  frontendErrorUrl(message: string): string {
+    const params = new URLSearchParams({
+      error: 'oauth_failed',
+      error_description: message,
+    });
+    return `${this.frontendBase()}/auth/callback?${params.toString()}`;
+  }
+
+  private frontendBase(): string {
+    return (
+      this.config.get<string>('github.frontendUrl') ?? 'http://localhost:3000'
+    ).replace(/\/$/, '');
+  }
+
   private async verifyState(state: string): Promise<void> {
     if (!state) throw new BadRequestException('Missing OAuth state');
     try {

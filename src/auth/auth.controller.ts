@@ -4,22 +4,24 @@ import {
   HttpCode,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiFoundResponse,
   ApiOkResponse,
   ApiOperation,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { UserProfileDto } from '../users/dto/user-profile.dto';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './current-user.decorator';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthUrlResponseDto } from './dto/auth-url.response';
 import { GithubCallbackQueryDto } from './dto/github-callback.query';
-import { LoginResponseDto } from './dto/login.response';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -37,11 +39,25 @@ export class AuthController {
 
   @Get('github/callback')
   @ApiOperation({
-    summary: 'GitHub OAuth callback — exchanges code for app JWT',
+    summary:
+      'GitHub OAuth callback — exchanges code, redirects to the frontend app',
   })
-  @ApiOkResponse({ type: LoginResponseDto })
-  callback(@Query() query: GithubCallbackQueryDto): Promise<LoginResponseDto> {
-    return this.auth.loginWithGithub(query.code, query.state);
+  @ApiFoundResponse({
+    description:
+      'Redirects to FRONTEND_URL/auth/callback with the session (or error) as query params',
+  })
+  async callback(
+    @Query() query: GithubCallbackQueryDto,
+    @Res() res: Response,
+  ): Promise<void> {
+    try {
+      const login = await this.auth.loginWithGithub(query.code, query.state);
+      res.redirect(this.auth.frontendCallbackUrl(login));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'OAuth exchange failed';
+      res.redirect(this.auth.frontendErrorUrl(message));
+    }
   }
 
   @Get('me')

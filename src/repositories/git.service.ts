@@ -23,6 +23,7 @@ export class GitService {
     return join(base, safeOwner, safeName);
   }
 
+  /* checking the repo is always cloned or not */
   async isCloned(localPath: string): Promise<boolean> {
     try {
       await access(join(localPath, '.git'));
@@ -37,8 +38,11 @@ export class GitService {
     localPath: string,
     branch?: string,
   ): Promise<void> {
+    // create a directory to clone the repo
     await mkdir(dirname(localPath), { recursive: true });
     const args = ['clone', '--depth', '1'];
+
+    // if branch is mentioned , we will cloned that branch
     if (branch) {
       args.push('--branch', branch);
     }

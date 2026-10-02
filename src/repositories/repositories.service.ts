@@ -45,6 +45,7 @@ export class RepositoriesService {
     return toLinkedRepositoryResponseList(links);
   }
 
+  /* this will run when user tries to connect the repo, after selecting the repo it takes owner and the name of the repo and clone it in background */
   async connect(
     userId: string,
     dto: ConnectRepositoryDto,
@@ -56,6 +57,7 @@ export class RepositoriesService {
     let cloneToken: string;
 
     try {
+      // extracting token (github) from the userId and repo details to get the clone Urls
       cloneToken = await this.users.getDecryptedGithubToken(userId);
       detail = await this.github.getRepo(cloneToken, owner, name);
     } catch (err) {
@@ -71,6 +73,7 @@ export class RepositoriesService {
       throw err;
     }
 
+    // we don't do create or update as multiple user can use the same repo which they have access to, so instead of cloning the same repo in different places, we reuse the same
     const repo = await this.prisma.repository.upsert({
       where: { owner_name: { owner, name } },
       create: {
@@ -153,6 +156,12 @@ export class RepositoriesService {
     return toRepositoryResponse(fresh);
   }
 
+  /* 
+  this is where the actual cloning happens
+  - it checks if repo is already 'READY' or not to abort the duplicate clone
+  - if yes, it adds you in the join of user Repo table
+  - if not, then , we add the access-token in the url and clone the repo
+  */
   private async doCloneInBackground(
     repoId: string,
     token: string,

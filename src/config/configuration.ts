@@ -33,6 +33,12 @@ export default () => ({
   tokens: {
     encryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? '',
   },
+  llm: {
+    provider: process.env.LLM_PROVIDER ?? 'gemini',
+    apiKey: process.env.LLM_API_KEY ?? '',
+    model: process.env.LLM_MODEL ?? 'gemini-2.5-flash',
+    timeoutMs: parseInt(process.env.LLM_TIMEOUT_MS ?? '60000', 10),
+  },
   repos: {
     basePath: process.env.REPOS_BASE_PATH ?? './data/repos',
     cloneTimeoutMs: parseInt(process.env.GIT_CLONE_TIMEOUT_MS ?? '120000', 10),

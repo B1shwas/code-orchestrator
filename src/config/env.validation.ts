@@ -49,6 +49,15 @@ export const envValidationSchema = Joi.object({
   ANALYSIS_HARD_MAX_BYTES: Joi.number().default(10485760),
   ANALYSIS_SEARCH_TIMEOUT_MS: Joi.number().default(15000),
   ANALYSIS_MAX_SEARCH_RESULTS: Joi.number().default(100),
+  LLM_PROVIDER: Joi.string().default('gemini'),
+  LLM_API_KEY: Joi.string()
+    .allow('')
+    .default('')
+    .description(
+      'LLM API key (e.g. Google AI Studio); empty disables LLM calls',
+    ),
+  LLM_MODEL: Joi.string().default('gemini-2.5-flash'),
+  LLM_TIMEOUT_MS: Joi.number().default(60000),
 });
 
 export type EnvVariables = {
@@ -73,6 +82,10 @@ export type EnvVariables = {
   JWT_SECRET: string;
   JWT_EXPIRES_IN: string;
   TOKEN_ENCRYPTION_KEY: string;
+  LLM_PROVIDER: string;
+  LLM_API_KEY: string;
+  LLM_MODEL: string;
+  LLM_TIMEOUT_MS: number;
   REPOS_BASE_PATH: string;
   GIT_CLONE_TIMEOUT_MS: number;
   ANALYSIS_MAX_TREE_DEPTH: number;

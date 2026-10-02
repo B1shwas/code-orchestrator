@@ -100,7 +100,7 @@ export class AnalysisService {
     }
 
     if (link.repository.status !== 'READY')
-      throw new BadRequestException('Repository is not ready');
+      throw new ConflictException('Repository is not ready yet');
 
     const safeDepth = Math.min(Math.max(depth, 1), this.maxTreeDepth());
     const safeLimit = Math.min(Math.max(1, limit), this.maxTreeEntries());

@@ -7,11 +7,18 @@ import { promisify } from 'node:util';
 import { join } from 'path';
 
 const execFileAsync = promisify(execFile);
-const CLONE_TIMEOUT_MS = 120_000;
+const DEFAULT_CLONE_TIMEOUT_MS = 120_000;
 
 @Injectable()
 export class GitService {
   constructor(private readonly config: ConfigService) {}
+
+  private cloneTimeoutMs(): number {
+    return (
+      this.config.get<number>('repos.cloneTimeoutMs') ??
+      DEFAULT_CLONE_TIMEOUT_MS
+    );
+  }
 
   // this function is for building the path to where the repo are cloned
   buildCanonicalPath(owner: string, name: string): string {
@@ -50,7 +57,7 @@ export class GitService {
     args.push(authedCloneUrl, localPath);
 
     try {
-      await execFileAsync('git', args, { timeout: CLONE_TIMEOUT_MS });
+      await execFileAsync('git', args, { timeout: this.cloneTimeoutMs() });
     } catch (err) {
       const message = (err as Error).message.replace(
         /x-access-token:[^@]+@/g,

@@ -268,6 +268,36 @@ export class AnalysisService {
     };
   }
 
+  async readEnclosing(
+    userId: string,
+    repositoryId: string,
+    subPath: string,
+    line: number,
+  ): Promise<FileContentDto> {
+    if (!Number.isInteger(line) || line < 1) {
+      throw new BadRequestException('Valid line number is required');
+    }
+    const { abs, rel } = await this.resolveGuardedFile(
+      userId,
+      repositoryId,
+      subPath,
+    );
+    const symbol = await this.ast.getEnclosingSymbol(abs, line);
+    if (!symbol) throw new NotFoundException('No symbol at line');
+    const text = await readFile(abs, 'utf8');
+    const lines = text.split('\n');
+    const content = lines
+      .slice(symbol.startLine - 1, symbol.endLine)
+      .join('\n');
+    return {
+      path: rel,
+      size: Buffer.byteLength(content),
+      truncated: false,
+      binary: false,
+      content,
+    };
+  }
+
   private async resolveGuardedPath(
     userId: string,
     repositoryId: string,

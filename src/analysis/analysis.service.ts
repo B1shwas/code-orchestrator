@@ -3,15 +3,22 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
   PayloadTooLargeException,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { resolveWithin } from './utils/path-safety.util';
+import { execFile } from 'node:child_process';
 import { readdir, realpath, stat, open } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
+import { PrismaService } from '../prisma/prisma.service';
+import { resolveWithin } from './utils/path-safety.util';
+import { parseGrepOutput } from './utils/grep-parser.util';
 import { TreeEntryDto } from './dto/tree-entry.dto';
 import { FileContentDto } from './dto/file-content.dto';
+import { SearchMatchDto } from './dto/search-match.dto';
+
+const execFileAsync = promisify(execFile);
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'coverage']);
 const DEFAULT_DEPTH = 2;
@@ -22,6 +29,12 @@ const MAX_LIMIT = 200;
 const MAX_FILE_BYTES = 256 * 1024;
 const HARD_MAX_BYTES = 10 * 1024 * 1024;
 const SNIFF_LEN = 8000;
+
+const SEARCH_TIMEOUT_MS = 15_000;
+const SEARCH_MAX_BUFFER_BYTES = 1024 * 1024;
+const DEFAULT_SEARCH_LIMIT = 50;
+const MAX_SEARCH_LIMIT = 100;
+const MAX_QUERY_LEN = 200;
 
 @Injectable()
 export class AnalysisService {
@@ -164,6 +177,63 @@ export class AnalysisService {
       };
     } finally {
       await fh.close();
+    }
+  }
+
+  async searchFiles(
+    userId: string,
+    repositoryId: string,
+    query: string,
+    limit = DEFAULT_SEARCH_LIMIT,
+  ): Promise<SearchMatchDto[]> {
+    const q = query?.trim() ?? '';
+    if (!q) throw new BadRequestException('Search query is required');
+    if (q.length > MAX_QUERY_LEN) {
+      throw new BadRequestException('Search query too long');
+    }
+
+    const link = await this.prisma.userRepository.findUnique({
+      where: { userId_repositoryId: { userId, repositoryId } },
+      include: { repository: true },
+    });
+    if (!link) throw new NotFoundException('Repository not found');
+    if (link.repository.status !== 'READY') {
+      throw new ConflictException('Repository is not ready yet');
+    }
+
+    const safeLimit = Math.min(Math.max(1, limit), MAX_SEARCH_LIMIT);
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        [
+          '-C',
+          link.repository.localPath,
+          'grep',
+          '-n',
+          '-I',
+          '--column',
+          '-F',
+          '--max-count',
+          String(safeLimit),
+          '-e',
+          q,
+          '--',
+          '.',
+          ':!node_modules',
+          ':!dist',
+          ':!coverage',
+        ],
+        { timeout: SEARCH_TIMEOUT_MS, maxBuffer: SEARCH_MAX_BUFFER_BYTES },
+      );
+      return parseGrepOutput(stdout, safeLimit);
+    } catch (err) {
+      // git grep exits 1 when nothing matches — not an error
+      if ((err as { code?: number }).code === 1) return [];
+      const partial = (err as { stdout?: unknown }).stdout;
+      if (typeof partial === 'string' && partial) {
+        return parseGrepOutput(partial, safeLimit);
+      }
+      throw new InternalServerErrorException('Search failed');
     }
   }
 }

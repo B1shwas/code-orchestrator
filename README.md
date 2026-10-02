@@ -32,6 +32,13 @@
 $ npm install
 ```
 
+The project pins `tree-sitter` via the `overrides` field in `package.json`.
+`tree-sitter-java@0.23.5` still declares an outdated optional peer range
+(`tree-sitter@^0.21.1`) while the Go and Python grammars require `^0.25.0`.
+The override forces a single runtime (`^0.25.1`, verified working with all
+three grammars at runtime) so plain `npm ci` succeeds, including inside the
+Docker build where no `.npmrc` is present.
+
 ## Compile and run the project
 
 ```bash

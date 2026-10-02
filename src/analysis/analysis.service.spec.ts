@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { AnalysisService } from './analysis.service';
+import { AstService } from './ast/ast.service';
 
 describe('AnalysisService', () => {
   let service: AnalysisService;
@@ -22,6 +23,10 @@ describe('AnalysisService', () => {
           useValue: { userRepository: { findUnique } },
         },
         { provide: ConfigService, useValue: { get: () => undefined } },
+        {
+          provide: AstService,
+          useValue: { getSymbolsInFile: jest.fn(), findSymbol: jest.fn() },
+        },
       ],
     }).compile();
 

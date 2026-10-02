@@ -8,16 +8,18 @@ import {
   PayloadTooLargeException,
 } from '@nestjs/common';
 import { execFile } from 'node:child_process';
-import { readdir, realpath, stat, open } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat, open } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveWithin } from './utils/path-safety.util';
 import { parseGrepOutput } from './utils/grep-parser.util';
+import { AstService } from './ast/ast.service';
 import { TreeEntryDto } from './dto/tree-entry.dto';
 import { FileContentDto } from './dto/file-content.dto';
 import { SearchMatchDto } from './dto/search-match.dto';
+import { SymbolInfoDto } from './dto/symbol-info.dto';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +44,7 @@ export class AnalysisService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly ast: AstService,
   ) {}
 
   private maxTreeDepth(): number {
@@ -221,6 +224,94 @@ export class AnalysisService {
     } finally {
       await fh.close();
     }
+  }
+
+  async listSymbols(
+    userId: string,
+    repositoryId: string,
+    subPath: string,
+  ): Promise<SymbolInfoDto[]> {
+    const { abs } = await this.resolveGuardedPath(
+      userId,
+      repositoryId,
+      subPath,
+    );
+    return this.ast.getSymbolsInFile(abs);
+  }
+
+  async readSymbol(
+    userId: string,
+    repositoryId: string,
+    subPath: string,
+    name: string,
+  ): Promise<FileContentDto> {
+    const trimmed = name?.trim() ?? '';
+    if (!trimmed) throw new BadRequestException('Symbol name is required');
+    const { abs, rel } = await this.resolveGuardedFile(
+      userId,
+      repositoryId,
+      subPath,
+    );
+    const symbol = await this.ast.findSymbol(abs, trimmed);
+    if (!symbol) throw new NotFoundException('Symbol not found');
+    const text = await readFile(abs, 'utf8');
+    const lines = text.split('\n');
+    const content = lines
+      .slice(symbol.startLine - 1, symbol.endLine)
+      .join('\n');
+    return {
+      path: rel,
+      size: Buffer.byteLength(content),
+      truncated: false,
+      binary: false,
+      content,
+    };
+  }
+
+  private async resolveGuardedPath(
+    userId: string,
+    repositoryId: string,
+    subPath: string,
+  ): Promise<{
+    repository: { localPath: string };
+    abs: string;
+    rel: string;
+  }> {
+    const link = await this.prisma.userRepository.findUnique({
+      where: { userId_repositoryId: { userId, repositoryId } },
+      include: { repository: true },
+    });
+    if (!link) throw new NotFoundException('Repository not found');
+    if (link.repository.status !== 'READY') {
+      throw new ConflictException('Repository is not ready yet');
+    }
+    const abs = resolveWithin(link.repository.localPath, subPath ?? '');
+    const rel = relative(link.repository.localPath, abs);
+    if (rel === '.git' || rel.startsWith('.git/')) {
+      throw new ForbiddenException('Access denied');
+    }
+    return { repository: link.repository, abs, rel };
+  }
+
+  private async resolveGuardedFile(
+    userId: string,
+    repositoryId: string,
+    subPath: string,
+  ): Promise<{ repository: { localPath: string }; abs: string; rel: string }> {
+    const { repository, rel } = await this.resolveGuardedPath(
+      userId,
+      repositoryId,
+      subPath,
+    );
+    if (!rel) throw new BadRequestException('File path is required');
+    const abs = resolveWithin(repository.localPath, rel);
+    const real = await realpath(abs).catch(() => null);
+    if (!real) throw new NotFoundException('File not found');
+    const baseResolved = resolve(repository.localPath);
+    if (real !== baseResolved && !real.startsWith(baseResolved + sep)) {
+      throw new ForbiddenException('Access denied');
+    }
+    return { repository, abs: real, rel };
   }
 
   async searchFiles(

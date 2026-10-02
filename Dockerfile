@@ -4,7 +4,8 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 # this line for the prisma, prisma needs openssl on Alpine, the container will build but fail on boot if this line is removed
-RUN apk add --no-cache openssl libc6-compat git
+# python3/make/g++ compile tree-sitter native grammars during npm ci (deps stage only, not shipped to prod)
+RUN apk add --no-cache openssl libc6-compat git python3 make g++
 
 COPY package.json package-lock.json ./
 COPY prisma ./prisma

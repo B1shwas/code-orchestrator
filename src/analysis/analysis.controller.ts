@@ -11,6 +11,7 @@ import { AnalysisService } from './analysis.service';
 import { TreeEntryDto } from './dto/tree-entry.dto';
 import { FileContentDto } from './dto/file-content.dto';
 import { SearchMatchDto } from './dto/search-match.dto';
+import { SymbolInfoDto } from './dto/symbol-info.dto';
 
 @ApiTags('analysis')
 @ApiBearerAuth('bearer')
@@ -64,5 +65,28 @@ export class AnalysisController {
       q ?? '',
       limit ? parseInt(limit, 10) : 50,
     );
+  }
+
+  @Get('symbols')
+  @ApiOperation({ summary: 'List code symbols in a file of a linked repo' })
+  @ApiOkResponse({ type: [SymbolInfoDto] })
+  symbols(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Query('path') path?: string,
+  ): Promise<SymbolInfoDto[]> {
+    return this.analysis.listSymbols(userId, id, path ?? '');
+  }
+
+  @Get('symbol')
+  @ApiOperation({ summary: 'Read one symbol (function/class) from a file' })
+  @ApiOkResponse({ type: FileContentDto })
+  symbol(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Query('path') path?: string,
+    @Query('name') name?: string,
+  ): Promise<FileContentDto> {
+    return this.analysis.readSymbol(userId, id, path ?? '', name ?? '');
   }
 }

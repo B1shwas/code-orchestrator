@@ -87,9 +87,10 @@ export class EvidenceBuilderService {
     userId: string,
     repositoryId: string,
     question: string,
+    hints: { targetFile?: string; targetSymbol?: string } = {},
   ): Promise<EvidenceBundle> {
     const terms = tokenizeQuestion(question);
-    const code = await this.gatherCode(userId, repositoryId, terms);
+    const code = await this.gatherCode(userId, repositoryId, terms, hints);
     const { commits, diffs, prs, issues, historyNote } =
       await this.gatherHistory(userId, repositoryId, terms, code);
     return { code, commits, diffs, prs, issues, historyNote };
@@ -99,6 +100,7 @@ export class EvidenceBuilderService {
     userId: string,
     repositoryId: string,
     terms: string[],
+    hints: { targetFile?: string; targetSymbol?: string } = {},
   ): Promise<CodeEvidence[]> {
     // Rank files by grep hit count across the top terms.
     const hits = new Map<string, number>();
@@ -115,10 +117,17 @@ export class EvidenceBuilderService {
         continue;
       }
     }
-    const files = [...hits.entries()]
+    const ranked = [...hits.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, MAX_FILES)
       .map(([file]) => file);
+
+    // Explicit hints win over search: a named file always leads so history
+    // covers it, capped back to MAX_FILES afterwards.
+    const hintFile = hints.targetFile?.trim() ?? '';
+    const hintSymbol = hints.targetSymbol?.trim() ?? '';
+    const files = (
+      hintFile && !ranked.includes(hintFile) ? [hintFile, ...ranked] : ranked
+    ).slice(0, MAX_FILES);
 
     const out: CodeEvidence[] = [];
     const seen = new Set<string>();
@@ -131,6 +140,38 @@ export class EvidenceBuilderService {
       chars += e.content.length;
       out.push(e);
     };
+
+    // A named symbol is read directly first so it leads the bundle even
+    // when grep ranks its file lower.
+    if (hintFile && hintSymbol) {
+      try {
+        const symbols = await this.analysis.listSymbols(
+          userId,
+          repositoryId,
+          hintFile,
+        );
+        const exact = symbols.find((s) => s.name === hintSymbol);
+        if (exact) {
+          const content = await this.analysis.readSymbol(
+            userId,
+            repositoryId,
+            hintFile,
+            exact.name,
+          );
+          if (content.content != null) {
+            push({
+              file: hintFile,
+              startLine: exact.startLine,
+              endLine: exact.endLine,
+              content: content.content,
+              symbol: exact.name,
+            });
+          }
+        }
+      } catch {
+        // fall through to the search-driven flow below
+      }
+    }
 
     for (const file of files) {
       let symbols: { name: string; startLine: number; endLine: number }[] = [];

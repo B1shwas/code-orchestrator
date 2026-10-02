@@ -6,6 +6,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
+import { InvestigationsModule } from './investigations/investigations.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RepositoriesModule } from './repositories/repositories.module';
 import { UsersModule } from './users/users.module';
@@ -29,6 +30,7 @@ import { AnalysisModule } from './analysis/analysis.module';
     UsersModule,
     AuthModule,
     RepositoriesModule,
+    InvestigationsModule,
     HealthModule,
     AnalysisModule,
   ],

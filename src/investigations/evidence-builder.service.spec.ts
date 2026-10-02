@@ -97,6 +97,40 @@ describe('EvidenceBuilderService', () => {
     });
   }
 
+  it('reads a hinted symbol directly first', async () => {
+    analysis.searchFiles.mockResolvedValue([]);
+    analysis.listSymbols.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(
+        String(args[2]) === 'src/pay.ts'
+          ? [
+              {
+                name: 'Repo.retryPayment',
+                kind: 'method',
+                startLine: 38,
+                endLine: 95,
+              },
+            ]
+          : [],
+      ),
+    );
+    analysis.readSymbol.mockResolvedValue({
+      path: 'src/pay.ts',
+      size: 50,
+      truncated: false,
+      binary: false,
+      content: 'async retryPayment() {}',
+    });
+    github.getFileHistory.mockResolvedValue([]);
+
+    const bundle = await service.buildEvidence('u1', 'r1', 'vague words here', {
+      targetFile: 'src/pay.ts',
+      targetSymbol: 'Repo.retryPayment',
+    });
+
+    expect(bundle.code[0]?.symbol).toBe('Repo.retryPayment');
+    expect(bundle.code[0]?.startLine).toBe(38);
+  });
+
   it('recovers a typoed symbol into code evidence', async () => {
     mockCode();
     github.getFileHistory.mockResolvedValue([]);

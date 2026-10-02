@@ -40,6 +40,38 @@ export type GithubRepoDetail = {
   defaultBranch: string;
 };
 
+export type GithubCommitSummary = {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+};
+
+export type GithubCommitFilePatch = {
+  path: string;
+  patch: string;
+};
+
+export type GithubCommitDetail = {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+  files: GithubCommitFilePatch[];
+};
+
+export type GithubPR = {
+  number: number;
+  title: string;
+  body: string | null;
+};
+
+export type GithubIssue = {
+  number: number;
+  title: string;
+  body: string | null;
+};
+
 const GITHUB_OAUTH_URL = 'https://github.com/login/oauth/access_token';
 const GITHUB_API = 'https://api.github.com';
 
@@ -186,6 +218,39 @@ export class GithubService {
     const res = await this.authedGet(`/user/repos?${params}`, accessToken);
     const data = (await res.json()) as GithubApiRepoRaw[];
     return Array.isArray(data) ? data : [];
+  }
+
+  async getFileHistory(
+    accessToken: string,
+    owner: string,
+    name: string,
+    path: string,
+    limit = 5,
+  ): Promise<GithubCommitSummary[]> {
+    const params = new URLSearchParams({
+      path,
+      per_page: String(Math.min(Math.max(1, limit), 20)),
+    });
+    const res = await this.authedGet(
+      `/repos/${owner}/${name}/commits?${params}`,
+      accessToken,
+    );
+    const data = (await res.json()) as {
+      sha?: string;
+      commit?: {
+        message?: string;
+        author?: { name?: string; date?: string } | null;
+      };
+    }[];
+    if (!Array.isArray(data)) return [];
+    return data
+      .filter((c) => typeof c.sha === 'string')
+      .map((c) => ({
+        sha: c.sha as string,
+        message: c.commit?.message ?? '',
+        author: c.commit?.author?.name ?? null,
+        date: c.commit?.author?.date ?? null,
+      }));
   }
 
   private async authedGet(

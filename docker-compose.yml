@@ -9,6 +9,8 @@ services:
       - .env.development.local
     volumes:
       - ./src:/app/src
+      # Persisted clone storage (REPOS_BASE_PATH=./data/repos -> /app/data/repos)
+      - ./data:/app/data
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run start:dev"

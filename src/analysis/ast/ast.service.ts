@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { readFile, stat } from 'node:fs/promises';
 import { SymbolInfo } from './ast.types';
 import { LanguageAdapter } from './language-adapter';
 import { adapterFor, defaultAdapters } from './language.registry';
+
+export const AST_ADAPTERS = Symbol('AST_ADAPTERS');
 
 @Injectable()
 export class AstService {
@@ -12,7 +14,9 @@ export class AstService {
     { mtimeMs: number; symbols: SymbolInfo[] }
   >();
 
-  constructor(adapters: LanguageAdapter[] = defaultAdapters()) {
+  constructor(
+    @Inject(AST_ADAPTERS) adapters: LanguageAdapter[] = defaultAdapters(),
+  ) {
     this.adapters = adapters;
   }
 

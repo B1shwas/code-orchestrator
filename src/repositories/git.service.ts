@@ -30,6 +30,21 @@ export class GitService {
     return join(base, safeOwner, safeName);
   }
 
+  // Size must never fail a clone — null means "unknown", still READY.
+  // -sk (not -sb) so it works on both BSD (macOS) and GNU (Alpine) du.
+  async dirSizeBytes(localPath: string): Promise<number | null> {
+    try {
+      const { stdout } = await execFileAsync('du', ['-sk', localPath], {
+        timeout: 30_000,
+      });
+      const kb = Number(stdout.split(/\s+/)[0]);
+      const size = kb * 1024;
+      return Number.isSafeInteger(size) && size >= 0 ? size : null;
+    } catch {
+      return null;
+    }
+  }
+
   /* checking the repo is always cloned or not */
   async isCloned(localPath: string): Promise<boolean> {
     try {

@@ -27,6 +27,7 @@ describe('RepositoriesService', () => {
     buildCanonicalPath: jest.fn().mockReturnValue('/tmp/repos/octocat/hello'),
     isCloned: jest.fn(),
     clone: jest.fn(),
+    dirSizeBytes: jest.fn().mockResolvedValue(1024),
   };
   const users = { getDecryptedGithubToken: jest.fn() };
   const github = { getRepo: jest.fn(), listUserRepos: jest.fn() };
@@ -188,9 +189,81 @@ describe('RepositoriesService', () => {
 
       expect(prisma.repository.update).toHaveBeenCalledWith({
         where: { id: 'r1' },
-        data: { status: 'PENDING', errorMessage: null },
+        data: {
+          status: 'PENDING',
+          errorMessage: null,
+          stage: null,
+          progress: null,
+        },
       });
       expect(dto.status).toBe('PENDING');
+    });
+  });
+
+  describe('clone driver', () => {
+    async function flushBackground(): Promise<void> {
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    function mockConnectDeps() {
+      users.getDecryptedGithubToken.mockResolvedValue('tok');
+      github.getRepo.mockResolvedValue({
+        githubRepoId: 1,
+        owner: 'octocat',
+        name: 'hello',
+        cloneUrl: 'https://github.com/octocat/hello.git',
+        defaultBranch: 'main',
+        private: false,
+      });
+      prisma.repository.upsert.mockResolvedValue(repoRow);
+      prisma.userRepository.createMany.mockResolvedValue({ count: 1 });
+    }
+
+    it('claims with stage/progress and marks READY with size', async () => {
+      mockConnectDeps();
+      prisma.repository.updateMany.mockResolvedValue({ count: 1 });
+      prisma.repository.findUniqueOrThrow.mockResolvedValue(repoRow);
+      git.isCloned.mockResolvedValue(true);
+
+      await service.connect('user-1', { owner: 'octocat', name: 'hello' });
+      await flushBackground();
+
+      expect(prisma.repository.updateMany).toHaveBeenCalledWith({
+        where: { id: 'repo-1', status: 'PENDING' },
+        data: { status: 'CLONING', stage: 'cloning', progress: 5 },
+      });
+      expect(prisma.repository.update).toHaveBeenCalledWith({
+        where: { id: 'repo-1' },
+        data: {
+          status: 'READY',
+          errorMessage: null,
+          stage: null,
+          progress: 100,
+          sizeBytes: 1024,
+        },
+      });
+    });
+
+    it('marks ERROR and clears stage on clone failure', async () => {
+      mockConnectDeps();
+      prisma.repository.updateMany.mockResolvedValue({ count: 1 });
+      prisma.repository.findUniqueOrThrow.mockResolvedValue(repoRow);
+      git.isCloned.mockResolvedValue(false);
+      git.clone.mockRejectedValue(new Error('boom'));
+
+      await service.connect('user-1', { owner: 'octocat', name: 'hello' });
+      await flushBackground();
+
+      expect(prisma.repository.update).toHaveBeenCalledWith({
+        where: { id: 'repo-1' },
+        data: {
+          status: 'ERROR',
+          errorMessage: 'boom',
+          stage: null,
+          progress: null,
+        },
+      });
     });
   });
 
@@ -202,7 +275,12 @@ describe('RepositoriesService', () => {
 
       expect(prisma.repository.updateMany).toHaveBeenCalledWith({
         where: { status: 'CLONING' },
-        data: { status: 'PENDING', errorMessage: null },
+        data: {
+          status: 'PENDING',
+          errorMessage: null,
+          stage: null,
+          progress: null,
+        },
       });
     });
   });

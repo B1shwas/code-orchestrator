@@ -35,7 +35,12 @@ export class RepositoriesService implements OnModuleInit {
     // Re-queue as PENDING; the next connect/retry claims and clones it.
     const stale = await this.prisma.repository.updateMany({
       where: { status: 'CLONING' },
-      data: { status: 'PENDING', errorMessage: null },
+      data: {
+        status: 'PENDING',
+        errorMessage: null,
+        stage: null,
+        progress: null,
+      },
     });
     if (stale.count > 0) {
       this.logger.warn(
@@ -57,7 +62,11 @@ export class RepositoriesService implements OnModuleInit {
   async listMine(userId: string): Promise<RepositoryResponseDto[]> {
     const links = await this.prisma.userRepository.findMany({
       where: { userId },
-      include: { repository: true },
+      include: {
+        repository: {
+          include: { _count: { select: { investigations: true } } },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -123,7 +132,11 @@ export class RepositoriesService implements OnModuleInit {
   ): Promise<RepositoryResponseDto> {
     const link = await this.prisma.userRepository.findUnique({
       where: { userId_repositoryId: { userId, repositoryId } },
-      include: { repository: true },
+      include: {
+        repository: {
+          include: { _count: { select: { investigations: true } } },
+        },
+      },
     });
 
     if (!link) {
@@ -157,7 +170,11 @@ export class RepositoriesService implements OnModuleInit {
   ): Promise<RepositoryResponseDto> {
     const link = await this.prisma.userRepository.findUnique({
       where: { userId_repositoryId: { userId, repositoryId } },
-      include: { repository: true },
+      include: {
+        repository: {
+          include: { _count: { select: { investigations: true } } },
+        },
+      },
     });
     if (!link) throw new NotFoundException('Repository not found');
     if (link.repository.status !== 'ERROR') {
@@ -165,7 +182,12 @@ export class RepositoriesService implements OnModuleInit {
     }
     await this.prisma.repository.update({
       where: { id: repositoryId },
-      data: { status: 'PENDING', errorMessage: null },
+      data: {
+        status: 'PENDING',
+        errorMessage: null,
+        stage: null,
+        progress: null,
+      },
     });
     const token = await this.users.getDecryptedGithubToken(userId);
     void this.doCloneInBackground(repositoryId, token).catch(() => {});
@@ -187,7 +209,7 @@ export class RepositoriesService implements OnModuleInit {
   ): Promise<void> {
     const claimed = await this.prisma.repository.updateMany({
       where: { id: repoId, status: 'PENDING' },
-      data: { status: 'CLONING' },
+      data: { status: 'CLONING', stage: 'cloning', progress: 5 },
     });
 
     if (claimed.count === 0) return;
@@ -200,7 +222,13 @@ export class RepositoriesService implements OnModuleInit {
       if (await this.git.isCloned(repo.localPath)) {
         await this.prisma.repository.update({
           where: { id: repo.id },
-          data: { status: 'READY', errorMessage: null },
+          data: {
+            status: 'READY',
+            errorMessage: null,
+            stage: null,
+            progress: 100,
+            sizeBytes: await this.git.dirSizeBytes(repo.localPath),
+          },
         });
 
         return;
@@ -213,7 +241,17 @@ export class RepositoriesService implements OnModuleInit {
       await this.git.clone(authUrl, repo.localPath, repo.defaultBranch);
       await this.prisma.repository.update({
         where: { id: repo.id },
-        data: { status: 'READY', errorMessage: null },
+        data: { stage: 'finalizing', progress: 80 },
+      });
+      await this.prisma.repository.update({
+        where: { id: repo.id },
+        data: {
+          status: 'READY',
+          errorMessage: null,
+          stage: null,
+          progress: 100,
+          sizeBytes: await this.git.dirSizeBytes(repo.localPath),
+        },
       });
     } catch (err) {
       const message = ((err as Error).message ?? 'clone failed')
@@ -221,7 +259,12 @@ export class RepositoriesService implements OnModuleInit {
         .replace(/x-access-token:[^@]+@/g, 'x-access-token:<redacted>@');
       await this.prisma.repository.update({
         where: { id: repo.id },
-        data: { status: 'ERROR', errorMessage: message },
+        data: {
+          status: 'ERROR',
+          errorMessage: message,
+          stage: null,
+          progress: null,
+        },
       });
     }
   }

@@ -15,6 +15,9 @@ const baseRepo: Repository = {
   localPath: './data/repos/octocat/hello-world',
   status: 'READY',
   errorMessage: null,
+  sizeBytes: BigInt(44892160),
+  stage: null,
+  progress: 100,
   createdAt: new Date('2026-01-01T00:00:00Z'),
   updatedAt: new Date('2026-01-02T00:00:00Z'),
 };
@@ -29,11 +32,33 @@ describe('toRepositoryResponse', () => {
       name: 'hello-world',
       defaultBranch: 'main',
       status: 'READY',
+      stage: null,
+      progress: 100,
+      sizeBytes: 44892160,
+      investigationCount: 0,
       createdAt: baseRepo.createdAt,
       updatedAt: baseRepo.updatedAt,
     });
     expect(dto).not.toHaveProperty('localPath');
     expect(dto).not.toHaveProperty('cloneUrl');
+  });
+
+  it('converts bigint size and reads the investigation count', () => {
+    const dto = toRepositoryResponse({
+      ...baseRepo,
+      sizeBytes: null,
+      _count: { investigations: 48 },
+    });
+
+    expect(dto.sizeBytes).toBeNull();
+    expect(dto.investigationCount).toBe(48);
+  });
+
+  it('rejects unsafe size values', () => {
+    expect(
+      toRepositoryResponse({ ...baseRepo, sizeBytes: -5 as unknown as bigint })
+        .sizeBytes,
+    ).toBeNull();
   });
 });
 

@@ -36,6 +36,10 @@ model Repository {
   status       RepoStatus @default(PENDING)
   errorMessage String?
 
+  sizeBytes BigInt?
+  stage     String?
+  progress  Int?
+
   members        UserRepository[]
   investigations Investigation[]
 

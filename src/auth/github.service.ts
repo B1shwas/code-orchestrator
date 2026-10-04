@@ -74,6 +74,7 @@ export type GithubIssue = {
 
 const GITHUB_OAUTH_URL = 'https://github.com/login/oauth/access_token';
 const GITHUB_API = 'https://api.github.com';
+const GITHUB_TIMEOUT_MS = 10_000;
 
 @Injectable()
 export class GithubService {
@@ -330,9 +331,12 @@ export class GithubService {
     accessToken: string,
     options?: { allowNotFound?: boolean },
   ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GITHUB_TIMEOUT_MS);
     let res: Response;
     try {
       res = await fetch(`${GITHUB_API}${path}`, {
+        signal: controller.signal,
         headers: {
           Accept: 'application/vnd.github+json',
           Authorization: `Bearer ${accessToken}`,
@@ -340,9 +344,14 @@ export class GithubService {
           'X-GitHub-Api-Version': '2022-11-28',
         },
       });
-    } catch {
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw new BadGatewayException('GitHub API timed out');
+      }
       this.logger.error(`GitHub API network error (${path})`);
       throw new BadGatewayException('GitHub API unreachable');
+    } finally {
+      clearTimeout(timer);
     }
     if (res.status === 401)
       throw new UnauthorizedException('Invalid GitHub token');

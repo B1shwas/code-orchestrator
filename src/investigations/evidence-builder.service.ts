@@ -4,6 +4,18 @@ import { extractIssueRefs } from '../auth/utils/github-refs.util';
 import { UsersService } from '../users/users.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { createLimiter } from './utils/p-limit.util';
+
+// Bursts stay capped so one investigation (and later, one agent
+// iteration) never hammers the API or the DB pool.
+const MAX_CONCURRENT = 5;
+
+async function settleAll<T>(
+  limit: <U>(fn: () => Promise<U>) => Promise<U>,
+  fns: (() => Promise<T>)[],
+): Promise<PromiseSettledResult<T>[]> {
+  return Promise.allSettled(fns.map((fn) => limit(fn)));
+}
 import {
   CodeEvidence,
   CommitEvidence,
@@ -104,18 +116,19 @@ export class EvidenceBuilderService {
   ): Promise<CodeEvidence[]> {
     // ranking files by grep hit count across the top terms
     const hits = new Map<string, number>();
-    for (const term of terms.slice(0, MAX_SEARCH_TERMS)) {
-      try {
-        const matches = await this.analysis.searchFiles(
-          userId,
-          repositoryId,
-          term,
-          20,
-        );
-        for (const m of matches) hits.set(m.file, (hits.get(m.file) ?? 0) + 1);
-      } catch {
-        continue;
-      }
+    const settled = await Promise.allSettled(
+      terms
+        .slice(0, MAX_SEARCH_TERMS)
+        .map((term) =>
+          this.analysis.searchFiles(userId, repositoryId, term, 20),
+        ),
+    );
+
+    for (const result of settled) {
+      if (result.status !== 'fulfilled') continue;
+
+      for (const m of result.value)
+        hits.set(m.file, (hits.get(m.file) ?? 0) + 1);
     }
     const ranked = [...hits.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -173,35 +186,51 @@ export class EvidenceBuilderService {
       }
     }
 
-    for (const file of files) {
-      let symbols: { name: string; startLine: number; endLine: number }[] = [];
-      try {
-        symbols = await this.analysis.listSymbols(userId, repositoryId, file);
-      } catch {
-        continue;
-      }
+    const limit = createLimiter(MAX_CONCURRENT);
+    const symbolLists = await settleAll(
+      limit,
+      files.map(
+        (file) => () =>
+          this.analysis
+            .listSymbols(userId, repositoryId, file)
+            .then((symbols) => ({ file, symbols })),
+      ),
+    );
+    type ReadTask = {
+      file: string;
+      hit: { name: string; startLine: number; endLine: number };
+    };
+    const tasks: ReadTask[] = [];
+    for (const result of symbolLists) {
+      if (result.status !== 'fulfilled') continue;
+      const { file, symbols } = result.value;
       for (const term of terms) {
         const hit = symbols.find((s) => fuzzyMatch(term, s.name));
-        if (!hit) continue;
-        try {
-          const content = await this.analysis.readSymbol(
-            userId,
-            repositoryId,
-            file,
-            hit.name,
-          );
-          if (content.content == null) continue;
-          push({
-            file,
-            startLine: hit.startLine,
-            endLine: hit.endLine,
-            content: content.content,
-            symbol: hit.name,
-          });
-        } catch {
-          continue;
-        }
+        if (hit) tasks.push({ file, hit });
       }
+    }
+    const reads = await settleAll(
+      limit,
+      tasks.map(
+        ({ file, hit }) =>
+          () =>
+            this.analysis
+              .readSymbol(userId, repositoryId, file, hit.name)
+              .then((content) => ({ file, hit, content: content.content })),
+      ),
+    );
+    for (const result of reads) {
+      if (result.status !== 'fulfilled' || result.value.content == null) {
+        continue;
+      }
+      const { file, hit, content } = result.value;
+      push({
+        file,
+        startLine: hit.startLine,
+        endLine: hit.endLine,
+        content,
+        symbol: hit.name,
+      });
     }
     return out;
   }
@@ -226,15 +255,18 @@ export class EvidenceBuilderService {
       historyNote: 'No relevant commits found in file history.' as
         string | null,
     };
-    const link = await this.prisma.userRepository
-      .findUnique({
-        where: { userId_repositoryId: { userId, repositoryId } },
-      })
-      .catch(() => null);
-    // Owner/name come from the canonical repository row.
-    const repo = await this.prisma.repository
-      .findUnique({ where: { id: repositoryId } })
-      .catch(() => null);
+    // Owner/name come from the canonical repository row; the two lookups
+    // are independent so they run together.
+    const [link, repo] = await Promise.all([
+      this.prisma.userRepository
+        .findUnique({
+          where: { userId_repositoryId: { userId, repositoryId } },
+        })
+        .catch(() => null),
+      this.prisma.repository
+        .findUnique({ where: { id: repositoryId } })
+        .catch(() => null),
+    ]);
     if (!link || !repo) throw new NotFoundException('Repository not found');
 
     let token: string;
@@ -250,25 +282,19 @@ export class EvidenceBuilderService {
     );
     if (files.length === 0) return empty;
     const candidates = new Map<string, RankedCommit>();
-    for (const file of files) {
-      let history: Awaited<ReturnType<GithubService['getFileHistory']>> = [];
-      try {
-        history = await this.github.getFileHistory(
-          token,
-          repo.owner,
-          repo.name,
-          file,
-          5,
-        );
-      } catch {
-        continue;
-      }
-      for (const c of history) {
+    const settled = await Promise.allSettled(
+      files.map((file) =>
+        this.github
+          .getFileHistory(token, repo.owner, repo.name, file, 5)
+          .then((history) => ({ file, history })),
+      ),
+    );
+    for (const result of settled) {
+      if (result.status !== 'fulfilled') continue;
+      for (const c of result.value.history) {
         const score = this.scoreCommit(c.message, terms);
         const prev = candidates.get(c.sha);
-        if (!prev || score > prev.score) {
-          candidates.set(c.sha, { ...c, score });
-        }
+        if (!prev || score > prev.score) candidates.set(c.sha, { ...c, score });
       }
     }
     const ranked = [...candidates.values()]
@@ -278,24 +304,35 @@ export class EvidenceBuilderService {
 
     // verifying by diff: keep commits whose patch touches our evidence files
     // first, then the rest by score.
+    const limit = createLimiter(MAX_CONCURRENT);
     const withDiffs: {
       commit: RankedCommit;
       touches: boolean;
       files: { path: string; patch: string }[];
     }[] = [];
+    const details = await settleAll(
+      limit,
+      ranked.map(
+        (commit) => () =>
+          this.github
+            .getCommitDetail(token, repo.owner, repo.name, commit.sha)
+            .then((detail) => ({ commit, detail })),
+      ),
+    );
+    for (const result of details) {
+      if (result.status !== 'fulfilled') {
+        // detail fetch failed: commit stays ranked but contributes no diff
+        continue;
+      }
+      const { commit, detail } = result.value;
+      const touches = detail.files.some((f) =>
+        files.some((ef) => f.path === ef || f.path.endsWith('/' + ef)),
+      );
+      withDiffs.push({ commit, touches, files: detail.files });
+    }
+    // Commits whose detail fetch failed keep their score position.
     for (const commit of ranked) {
-      try {
-        const detail = await this.github.getCommitDetail(
-          token,
-          repo.owner,
-          repo.name,
-          commit.sha,
-        );
-        const touches = detail.files.some((f) =>
-          files.some((ef) => f.path === ef || f.path.endsWith('/' + ef)),
-        );
-        withDiffs.push({ commit, touches, files: detail.files });
-      } catch {
+      if (!withDiffs.some((w) => w.commit.sha === commit.sha)) {
         withDiffs.push({ commit, touches: false, files: [] });
       }
     }
@@ -314,19 +351,23 @@ export class EvidenceBuilderService {
 
     const prs: PREvidence[] = [];
     const seenPRs = new Set<number>();
-    for (const k of kept.slice(0, MAX_PRS)) {
-      let found: Awaited<ReturnType<GithubService['getCommitPRs']>> = [];
-      try {
-        found = await this.github.getCommitPRs(
-          token,
-          repo.owner,
-          repo.name,
-          k.commit.sha,
-        );
-      } catch {
-        continue;
-      }
-      for (const pr of found) {
+    const prResults = await settleAll(
+      limit,
+      kept
+        .slice(0, MAX_PRS)
+        .map(
+          (k) => () =>
+            this.github.getCommitPRs(
+              token,
+              repo.owner,
+              repo.name,
+              k.commit.sha,
+            ),
+        ),
+    );
+    for (const result of prResults) {
+      if (result.status !== 'fulfilled') continue;
+      for (const pr of result.value) {
         if (seenPRs.has(pr.number)) continue;
         seenPRs.add(pr.number);
         prs.push(pr);
@@ -337,22 +378,25 @@ export class EvidenceBuilderService {
 
     const issues: IssueEvidence[] = [];
     const seenIssues = new Set<number>();
+    const wanted: number[] = [];
     for (const pr of prs) {
       for (const n of extractIssueRefs(pr.body ?? '')) {
-        if (seenIssues.has(n) || issues.length >= MAX_ISSUES) continue;
+        if (seenIssues.has(n)) continue;
         seenIssues.add(n);
-        try {
-          const issue = await this.github.getIssue(
-            token,
-            repo.owner,
-            repo.name,
-            n,
-          );
-          issues.push(issue);
-        } catch {
-          continue;
-        }
+        wanted.push(n);
+        if (wanted.length >= MAX_ISSUES) break;
       }
+      if (wanted.length >= MAX_ISSUES) break;
+    }
+    const issueResults = await settleAll(
+      limit,
+      wanted.map(
+        (n) => () => this.github.getIssue(token, repo.owner, repo.name, n),
+      ),
+    );
+    for (const result of issueResults) {
+      if (result.status !== 'fulfilled') continue;
+      issues.push(result.value);
       if (issues.length >= MAX_ISSUES) break;
     }
 

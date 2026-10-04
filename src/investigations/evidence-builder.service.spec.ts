@@ -222,4 +222,42 @@ describe('EvidenceBuilderService', () => {
     expect(bundle.issues).toHaveLength(1);
     expect(bundle.issues[0]?.number).toBe(141);
   });
+
+  it('keeps partial evidence when one batched call fails', async () => {
+    analysis.searchFiles.mockImplementation((...args: unknown[]) =>
+      String(args[2]) === 'retry'
+        ? Promise.reject(new Error('timeout'))
+        : Promise.resolve([
+            { file: 'src/pay.ts', line: 1, column: 1, preview: 'x' },
+          ]),
+    );
+    analysis.listSymbols.mockResolvedValue([
+      { name: 'Repo.retryPayment', kind: 'method', startLine: 38, endLine: 95 },
+    ]);
+    analysis.readSymbol.mockResolvedValue({
+      path: 'src/pay.ts',
+      size: 10,
+      truncated: false,
+      binary: false,
+      content: 'async retryPayment() {}',
+    });
+    github.getFileHistory.mockResolvedValue([
+      { sha: 'abc', message: 'fix', author: 'a', date: 'd' },
+    ]);
+    github.getCommitDetail.mockRejectedValueOnce(new Error('flaky'));
+    github.getCommitDetail.mockResolvedValue({
+      sha: 'abc',
+      message: 'fix',
+      author: 'a',
+      date: 'd',
+      files: [{ path: 'src/pay.ts', patch: '@@' }],
+    });
+    github.getCommitPRs.mockResolvedValue([]);
+
+    const bundle = await service.buildEvidence('u1', 'r1', 'retry payment');
+
+    expect(bundle.code.length).toBeGreaterThan(0);
+    expect(bundle.commits).toHaveLength(1);
+    expect(bundle.historyNote).toBeNull();
+  });
 });

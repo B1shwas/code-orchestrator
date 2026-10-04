@@ -9,9 +9,8 @@ services:
       - .env.development.local
     volumes:
       - ./src:/app/src
-      # Persisted clone storage (REPOS_BASE_PATH=./data/repos -> /app/data/repos)
+      # persisted clone storage (REPOS_BASE_PATH=./data/repos -> /app/data/repos)
       - ./data:/app/data
-      # TS configs must be live (baked copies go stale on edit -> tsc recompiles clones)
       - ./tsconfig.json:/app/tsconfig.json
       - ./tsconfig.build.json:/app/tsconfig.build.json
       - ./nest-cli.json:/app/nest-cli.json

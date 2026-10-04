@@ -102,7 +102,7 @@ export class EvidenceBuilderService {
     terms: string[],
     hints: { targetFile?: string; targetSymbol?: string } = {},
   ): Promise<CodeEvidence[]> {
-    // Rank files by grep hit count across the top terms.
+    // ranking files by grep hit count across the top terms
     const hits = new Map<string, number>();
     for (const term of terms.slice(0, MAX_SEARCH_TERMS)) {
       try {
@@ -121,7 +121,7 @@ export class EvidenceBuilderService {
       .sort((a, b) => b[1] - a[1])
       .map(([file]) => file);
 
-    // Explicit hints win over search: a named file always leads so history
+    // explicit hints win over search: a named file always leads so history
     // covers it, capped back to MAX_FILES afterwards.
     const hintFile = hints.targetFile?.trim() ?? '';
     const hintSymbol = hints.targetSymbol?.trim() ?? '';
@@ -141,7 +141,7 @@ export class EvidenceBuilderService {
       out.push(e);
     };
 
-    // A named symbol is read directly first so it leads the bundle even
+    // a named symbol is read directly first so it leads the bundle even
     // when grep ranks its file lower.
     if (hintFile && hintSymbol) {
       try {
@@ -276,7 +276,7 @@ export class EvidenceBuilderService {
       .slice(0, MAX_COMMITS);
     if (ranked.length === 0) return empty;
 
-    // Verify by diff: keep commits whose patch touches our evidence files
+    // verifying by diff: keep commits whose patch touches our evidence files
     // first, then the rest by score.
     const withDiffs: {
       commit: RankedCommit;

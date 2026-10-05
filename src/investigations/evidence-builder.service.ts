@@ -6,7 +6,7 @@ import { AnalysisService } from '../analysis/analysis.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { createLimiter } from './utils/p-limit.util';
 
-// Bursts stay capped so one investigation (and later, one agent
+// bursts stay capped so one investigation (and later, one agent
 // iteration) never hammers the API or the DB pool.
 const MAX_CONCURRENT = 5;
 
@@ -255,7 +255,7 @@ export class EvidenceBuilderService {
       historyNote: 'No relevant commits found in file history.' as
         string | null,
     };
-    // Owner/name come from the canonical repository row; the two lookups
+    // owner/name come from the canonical repository row; the two lookups
     // are independent so they run together.
     const [link, repo] = await Promise.all([
       this.prisma.userRepository

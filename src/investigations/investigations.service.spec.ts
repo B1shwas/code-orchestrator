@@ -1,7 +1,10 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { AnalysisService } from '../analysis/analysis.service';
+import { GithubService } from '../auth/github.service';
 import { LLM_SERVICE } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { UsersService } from '../users/users.service';
 import { EvidenceBuilderService } from './evidence-builder.service';
 import { InvestigationsService } from './investigations.service';
 
@@ -18,6 +21,18 @@ describe('InvestigationsService', () => {
   };
   const evidence = { buildEvidence: jest.fn() };
   const llm = { complete: jest.fn() };
+  const users = { getDecryptedGithubToken: jest.fn() };
+  const github = {
+    getFileHistory: jest.fn(),
+    getCommitDetail: jest.fn(),
+    getCommitPRs: jest.fn(),
+  };
+  const analysis = {
+    listTree: jest.fn(),
+    readFile: jest.fn(),
+    readSymbol: jest.fn(),
+    searchFiles: jest.fn(),
+  };
 
   const row = {
     id: 'inv-1',
@@ -40,6 +55,9 @@ describe('InvestigationsService', () => {
         InvestigationsService,
         { provide: PrismaService, useValue: prisma },
         { provide: EvidenceBuilderService, useValue: evidence },
+        { provide: UsersService, useValue: users },
+        { provide: GithubService, useValue: github },
+        { provide: AnalysisService, useValue: analysis },
         { provide: LLM_SERVICE, useValue: llm },
       ],
     }).compile();

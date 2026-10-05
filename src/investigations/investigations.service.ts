@@ -13,6 +13,11 @@ import { CreateInvestigationDto } from './dto/create-investigation.dto';
 import { EvidenceBundle } from './dto/evidence.dto';
 import { InvestigationResponseDto } from './dto/investigation-response.dto';
 import { buildInvestigationPrompt } from './prompts/investigate.prompt';
+import { UsersService } from '../users/users.service';
+import { GithubService } from '../auth/github.service';
+import { AnalysisService } from '../analysis/analysis.service';
+import { createTools } from './agent/tools';
+import { runAgentLoop } from './agent/runner';
 
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
@@ -39,6 +44,9 @@ export class InvestigationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly evidence: EvidenceBuilderService,
+    private readonly users: UsersService,
+    private readonly github: GithubService,
+    private readonly analysis: AnalysisService,
     @Inject(LLM_SERVICE) private readonly llm: LlmService,
   ) {}
 
@@ -114,9 +122,24 @@ export class InvestigationsService {
         where: { id: investigationId },
         data: { status: 'ANALYZING', evidence: bundle as never },
       });
-      const answer = await this.llm.complete(
+
+      const tools = createTools({
+        prisma: this.prisma,
+        users: this.users,
+        github: this.github,
+        analysis: this.analysis,
+      });
+
+      const { answer, verdict } = await runAgentLoop(
+        this.llm,
+        tools,
+        {
+          userId: gathering.userId,
+          repositoryId: gathering.repositoryId,
+        },
         buildInvestigationPrompt(gathering.query, bundle),
       );
+      this.logger.warn(`investigation ${investigationId} verdict=${verdict}`);
       await this.prisma.investigation.update({
         where: { id: investigationId },
         data: { status: 'COMPLETED', llmResponse: answer },

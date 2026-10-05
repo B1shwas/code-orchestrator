@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { GithubService } from '../auth/github.service';
 import { extractIssueRefs } from '../auth/utils/github-refs.util';
 import { UsersService } from '../users/users.service';
@@ -15,6 +15,12 @@ async function settleAll<T>(
   fns: (() => Promise<T>)[],
 ): Promise<PromiseSettledResult<T>[]> {
   return Promise.allSettled(fns.map((fn) => limit(fn)));
+}
+
+function reasonOf(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === 'string') return reason;
+  return 'unknown error';
 }
 import {
   CodeEvidence,
@@ -88,6 +94,8 @@ type RankedCommit = {
 
 @Injectable()
 export class EvidenceBuilderService {
+  private readonly logger = new Logger(EvidenceBuilderService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly users: UsersService,
@@ -101,10 +109,14 @@ export class EvidenceBuilderService {
     question: string,
     hints: { targetFile?: string; targetSymbol?: string } = {},
   ): Promise<EvidenceBundle> {
+    const started = Date.now();
     const terms = tokenizeQuestion(question);
     const code = await this.gatherCode(userId, repositoryId, terms, hints);
     const { commits, diffs, prs, issues, historyNote } =
       await this.gatherHistory(userId, repositoryId, terms, code);
+    this.logger.warn(
+      `evidence done files=${code.length} commits=${commits.length} prs=${prs.length} issues=${issues.length} totalMs=${Date.now() - started}`,
+    );
     return { code, commits, diffs, prs, issues, historyNote };
   }
 
@@ -117,17 +129,34 @@ export class EvidenceBuilderService {
     // ranking files by grep hit count across the top terms
     const hits = new Map<string, number>();
     const settled = await Promise.allSettled(
-      terms
-        .slice(0, MAX_SEARCH_TERMS)
-        .map((term) =>
-          this.analysis.searchFiles(userId, repositoryId, term, 20),
+      terms.slice(0, MAX_SEARCH_TERMS).map((term) =>
+        this.analysis.searchFiles(userId, repositoryId, term, 20).then(
+          (matches) => ({ term, ok: true as const, matches, reason: null }),
+          (reason: unknown) => ({
+            term,
+            ok: false as const,
+            matches: [],
+            reason,
+          }),
         ),
+      ),
     );
 
     for (const result of settled) {
-      if (result.status !== 'fulfilled') continue;
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(
+          `search batch failed reason="${reasonOf(result.reason)}"`,
+        );
+        continue;
+      }
+      if (!result.value.ok) {
+        this.logger.warn(
+          `search skipped term="${result.value.term}" reason="${reasonOf(result.value.reason)}"`,
+        );
+        continue;
+      }
 
-      for (const m of result.value)
+      for (const m of result.value.matches)
         hits.set(m.file, (hits.get(m.file) ?? 0) + 1);
     }
     const ranked = [...hits.entries()]
@@ -181,7 +210,10 @@ export class EvidenceBuilderService {
             });
           }
         }
-      } catch {
+      } catch (err) {
+        this.logger.warn(
+          `hint miss file="${hintFile}" symbol="${hintSymbol}" reason="${reasonOf(err)}"`,
+        );
         // fall through to the search-driven flow below
       }
     }
@@ -202,7 +234,10 @@ export class EvidenceBuilderService {
     };
     const tasks: ReadTask[] = [];
     for (const result of symbolLists) {
-      if (result.status !== 'fulfilled') continue;
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(`symbols skipped reason="${reasonOf(result.reason)}"`);
+        continue;
+      }
       const { file, symbols } = result.value;
       for (const term of terms) {
         const hit = symbols.find((s) => fuzzyMatch(term, s.name));
@@ -220,9 +255,13 @@ export class EvidenceBuilderService {
       ),
     );
     for (const result of reads) {
-      if (result.status !== 'fulfilled' || result.value.content == null) {
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(
+          `symbol read skipped reason="${reasonOf(result.reason)}"`,
+        );
         continue;
       }
+      if (result.value.content == null) continue;
       const { file, hit, content } = result.value;
       push({
         file,
@@ -272,7 +311,10 @@ export class EvidenceBuilderService {
     let token: string;
     try {
       token = await this.users.getDecryptedGithubToken(userId);
-    } catch {
+    } catch (err) {
+      this.logger.warn(
+        `history skipped: github token unavailable (${reasonOf(err)})`,
+      );
       return empty;
     }
 
@@ -290,7 +332,10 @@ export class EvidenceBuilderService {
       ),
     );
     for (const result of settled) {
-      if (result.status !== 'fulfilled') continue;
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(`history skipped reason="${reasonOf(result.reason)}"`);
+        continue;
+      }
       for (const c of result.value.history) {
         const score = this.scoreCommit(c.message, terms);
         const prev = candidates.get(c.sha);
@@ -322,6 +367,9 @@ export class EvidenceBuilderService {
     for (const result of details) {
       if (result.status !== 'fulfilled') {
         // detail fetch failed: commit stays ranked but contributes no diff
+        this.logger.warn(
+          `commit detail skipped reason="${reasonOf(result.reason)}"`,
+        );
         continue;
       }
       const { commit, detail } = result.value;
@@ -353,21 +401,35 @@ export class EvidenceBuilderService {
     const seenPRs = new Set<number>();
     const prResults = await settleAll(
       limit,
-      kept
-        .slice(0, MAX_PRS)
-        .map(
-          (k) => () =>
-            this.github.getCommitPRs(
-              token,
-              repo.owner,
-              repo.name,
-              k.commit.sha,
+      kept.slice(0, MAX_PRS).map(
+        (k) => () =>
+          this.github
+            .getCommitPRs(token, repo.owner, repo.name, k.commit.sha)
+            .then(
+              (found) => ({ sha: k.commit.sha, ok: true as const, found }),
+              (reason: unknown) => ({
+                sha: k.commit.sha,
+                ok: false as const,
+                found: [],
+                reason,
+              }),
             ),
-        ),
+      ),
     );
     for (const result of prResults) {
-      if (result.status !== 'fulfilled') continue;
-      for (const pr of result.value) {
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(
+          `pr lookup batch failed reason="${reasonOf(result.reason)}"`,
+        );
+        continue;
+      }
+      if (!result.value.ok) {
+        this.logger.warn(
+          `pr lookup skipped sha="${result.value.sha}" reason="${reasonOf(result.value.reason)}"`,
+        );
+        continue;
+      }
+      for (const pr of result.value.found) {
         if (seenPRs.has(pr.number)) continue;
         seenPRs.add(pr.number);
         prs.push(pr);
@@ -391,12 +453,32 @@ export class EvidenceBuilderService {
     const issueResults = await settleAll(
       limit,
       wanted.map(
-        (n) => () => this.github.getIssue(token, repo.owner, repo.name, n),
+        (n) => () =>
+          this.github.getIssue(token, repo.owner, repo.name, n).then(
+            (issue) => ({ n, ok: true as const, issue }),
+            (reason: unknown) => ({
+              n,
+              ok: false as const,
+              issue: null,
+              reason,
+            }),
+          ),
       ),
     );
     for (const result of issueResults) {
-      if (result.status !== 'fulfilled') continue;
-      issues.push(result.value);
+      if (result.status !== 'fulfilled') {
+        this.logger.warn(
+          `issue fetch batch failed reason="${reasonOf(result.reason)}"`,
+        );
+        continue;
+      }
+      if (!result.value.ok || !result.value.issue) {
+        this.logger.warn(
+          `issue fetch skipped issue=${result.value.n} reason="${reasonOf(result.value.reason)}"`,
+        );
+        continue;
+      }
+      issues.push(result.value.issue);
       if (issues.length >= MAX_ISSUES) break;
     }
 

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { GithubService } from '../auth/github.service';
 import { UsersService } from '../users/users.service';
@@ -259,5 +260,59 @@ describe('EvidenceBuilderService', () => {
     expect(bundle.code.length).toBeGreaterThan(0);
     expect(bundle.commits).toHaveLength(1);
     expect(bundle.historyNote).toBeNull();
+  });
+
+  it('logs skipped steps and a per-run summary', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    try {
+      analysis.searchFiles.mockImplementation((...args: unknown[]) =>
+        String(args[2]) === 'retry'
+          ? Promise.reject(new Error('timeout'))
+          : Promise.resolve([
+              { file: 'src/pay.ts', line: 1, column: 1, preview: 'x' },
+            ]),
+      );
+      analysis.listSymbols.mockResolvedValue([
+        {
+          name: 'Repo.retryPayment',
+          kind: 'method',
+          startLine: 38,
+          endLine: 95,
+        },
+      ]);
+      analysis.readSymbol.mockResolvedValue({
+        path: 'src/pay.ts',
+        size: 10,
+        truncated: false,
+        binary: false,
+        content: 'async retryPayment() {}',
+      });
+      github.getFileHistory.mockResolvedValue([
+        { sha: 'abc', message: 'fix', author: 'a', date: 'd' },
+      ]);
+      github.getCommitDetail.mockResolvedValue({
+        sha: 'abc',
+        message: 'fix',
+        author: 'a',
+        date: 'd',
+        files: [{ path: 'src/pay.ts', patch: '@@' }],
+      });
+      github.getCommitPRs.mockResolvedValue([]);
+
+      const bundle = await service.buildEvidence('u1', 'r1', 'retry payment');
+
+      expect(bundle.code.length).toBeGreaterThan(0);
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.includes('search skipped term="retry"'))).toBe(
+        true,
+      );
+      expect(lines.some((l) => l.startsWith('evidence done files='))).toBe(
+        true,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

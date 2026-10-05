@@ -58,6 +58,7 @@ describe('EvidenceBuilderService', () => {
     searchFiles: jest.fn(),
     listSymbols: jest.fn(),
     readSymbol: jest.fn(),
+    readFile: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -314,5 +315,115 @@ describe('EvidenceBuilderService', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('always reads the hinted file even when no term matches', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      analysis.searchFiles.mockResolvedValue([]);
+      analysis.listSymbols.mockResolvedValue([
+        { name: 'GeminiLlmService', kind: 'class', startLine: 18, endLine: 78 },
+        { name: 'complete', kind: 'method', startLine: 23, endLine: 77 },
+      ]);
+      analysis.readSymbol.mockResolvedValue({
+        path: 'src/llm/gemini-llm.service.ts',
+        size: 10,
+        truncated: false,
+        binary: false,
+        content: null,
+      });
+      analysis.readFile.mockResolvedValue({
+        path: 'src/llm/gemini-llm.service.ts',
+        size: 100,
+        truncated: false,
+        binary: false,
+        content: 'const controller = new AbortController();\nsecond line',
+      });
+      github.getFileHistory.mockResolvedValue([]);
+
+      const bundle = await service.buildEvidence(
+        'u1',
+        'r1',
+        'this abortcontroler is doing what please tell me',
+        { targetFile: 'src/llm/gemini-llm.service.ts' },
+      );
+
+      expect(analysis.readFile).toHaveBeenCalledWith(
+        'u1',
+        'r1',
+        'src/llm/gemini-llm.service.ts',
+      );
+      expect(bundle.code[0]).toMatchObject({
+        file: 'src/llm/gemini-llm.service.ts',
+        startLine: 1,
+        endLine: 2,
+      });
+      expect(bundle.code[0]?.content).toContain('AbortController');
+      expect(bundle.historyNote).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns and falls back when the hinted file cannot be read', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      analysis.searchFiles.mockResolvedValue([
+        { file: 'src/pay.ts', line: 1, column: 1, preview: 'x' },
+      ]);
+      analysis.listSymbols.mockResolvedValue([
+        {
+          name: 'Repo.retryPayment',
+          kind: 'method',
+          startLine: 38,
+          endLine: 95,
+        },
+      ]);
+      analysis.readSymbol.mockResolvedValue({
+        path: 'src/pay.ts',
+        size: 10,
+        truncated: false,
+        binary: false,
+        content: 'async retryPayment() {}',
+      });
+      analysis.readFile.mockRejectedValue(new Error('File not found'));
+      github.getFileHistory.mockResolvedValue([]);
+
+      const bundle = await service.buildEvidence('u1', 'r1', 'retry payment', {
+        targetFile: 'src/gone.ts',
+      });
+
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.some((l) => l.includes('hint miss file="src/gone.ts"')),
+      ).toBe(true);
+      expect(bundle.code.length).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips binary hint content without crashing', async () => {
+    analysis.searchFiles.mockResolvedValue([]);
+    analysis.listSymbols.mockResolvedValue([]);
+    analysis.readFile.mockResolvedValue({
+      path: 'src/logo.png',
+      size: 100,
+      truncated: false,
+      binary: true,
+      content: null,
+    });
+    github.getFileHistory.mockResolvedValue([]);
+
+    const bundle = await service.buildEvidence('u1', 'r1', 'logo', {
+      targetFile: 'src/logo.png',
+    });
+
+    expect(bundle.code).toHaveLength(0);
+    expect(bundle.historyNote).not.toBeNull();
   });
 });

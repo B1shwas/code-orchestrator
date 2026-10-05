@@ -218,6 +218,32 @@ export class EvidenceBuilderService {
       }
     }
 
+    // an explicitly named file is always read: the user pointed at it, so
+    // its content leads the bundle even when no query term matches anything
+    // in it (typos, prose questions, symbol-less files).
+    if (hintFile && ![...seen].some((key) => key.startsWith(`${hintFile}:`))) {
+      try {
+        const file = await this.analysis.readFile(
+          userId,
+          repositoryId,
+          hintFile,
+        );
+        if (file.content != null) {
+          push({
+            file: hintFile,
+            startLine: 1,
+            endLine: file.content.split('\n').length,
+            content: file.content,
+            symbol: hintSymbol || null,
+          });
+        }
+      } catch (err) {
+        this.logger.warn(
+          `hint miss file="${hintFile}" symbol="${hintSymbol}" reason="${reasonOf(err)}"`,
+        );
+      }
+    }
+
     const limit = createLimiter(MAX_CONCURRENT);
     const symbolLists = await settleAll(
       limit,

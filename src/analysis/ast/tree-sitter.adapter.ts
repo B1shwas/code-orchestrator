@@ -33,6 +33,10 @@ export class TreeSitterAdapter implements LanguageAdapter {
 
   extractSymbols(text: string): SymbolInfo[] {
     const tree = this.parser.parse(text);
+    // under parallel load the native parse can yield a null tree — degrade
+    // to no symbols (same contract as an unknown language) instead of
+    // throwing inside Query.captures, which reads node.tree unconditionally.
+    if (!tree?.rootNode) return [];
     const out: SymbolInfo[] = [];
     for (const capture of this.query.captures(tree.rootNode)) {
       // queries capture the node only (@class/@method/...); the name

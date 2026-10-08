@@ -5,7 +5,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import type { Investigation } from '@prisma/client';
+import type {
+  EvidenceGrade,
+  EvidenceKind,
+  Investigation,
+  StepKind,
+} from '@prisma/client';
 import { LLM_SERVICE, LlmService } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EvidenceBuilderService } from './evidence-builder.service';
@@ -31,10 +36,68 @@ function toResponse(row: Investigation): InvestigationResponseDto {
     targetSymbol: row.targetSymbol,
     status: row.status,
     evidence: (row.evidence ?? null) as unknown as EvidenceBundle | null,
+    result: (row.result ?? null) as unknown as Record<string, unknown> | null,
     llmResponse: row.llmResponse,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+export type ProvisionalItem = {
+  kind: EvidenceKind;
+  ref: string;
+  excerpt: string;
+  grade: EvidenceGrade;
+};
+
+// Itemizes the bundle with provisional 'supported' grades — real grading
+// arrives with the verifier (Phase 1.4); until then every row is a claim
+// awaiting verification, never a verdict.
+export function buildProvisionalItems(
+  bundle: EvidenceBundle,
+): ProvisionalItem[] {
+  const items: ProvisionalItem[] = [];
+  for (const c of bundle.code) {
+    items.push({
+      kind: 'code',
+      ref: `${c.file}:${c.startLine}`,
+      excerpt: c.content,
+      grade: 'supported',
+    });
+  }
+  for (const c of bundle.commits) {
+    items.push({
+      kind: 'commit',
+      ref: c.sha,
+      excerpt: c.message,
+      grade: 'supported',
+    });
+  }
+  for (const d of bundle.diffs) {
+    items.push({
+      kind: 'diff',
+      ref: `${d.sha}:${d.file}`,
+      excerpt: d.patch,
+      grade: 'supported',
+    });
+  }
+  for (const p of bundle.prs) {
+    items.push({
+      kind: 'pr',
+      ref: `#${p.number}`,
+      excerpt: `${p.title}\n${p.body ?? ''}`,
+      grade: 'supported',
+    });
+  }
+  for (const i of bundle.issues) {
+    items.push({
+      kind: 'issue',
+      ref: `#${i.number}`,
+      excerpt: `${i.title}\n${i.body ?? ''}`,
+      grade: 'supported',
+    });
+  }
+  return items;
 }
 
 @Injectable()
@@ -103,6 +166,40 @@ export class InvestigationsService {
     return toResponse(row);
   }
 
+  private async appendStep(
+    investigationId: string,
+    kind: StepKind,
+    payload: unknown,
+  ): Promise<void> {
+    const count = await this.prisma.investigationStep.count({
+      where: { investigationId },
+    });
+    await this.prisma.investigationStep.create({
+      data: {
+        investigationId,
+        seq: count,
+        kind,
+        payload: payload as never,
+      },
+    });
+  }
+
+  private async saveEvidenceItems(
+    investigationId: string,
+    items: ProvisionalItem[],
+  ): Promise<void> {
+    if (items.length === 0) return;
+    await this.prisma.evidenceItem.createMany({
+      data: items.map((i) => ({
+        investigationId,
+        kind: i.kind,
+        ref: i.ref,
+        excerpt: i.excerpt.slice(0, 500),
+        grade: i.grade,
+      })),
+    });
+  }
+
   private async run(investigationId: string): Promise<void> {
     try {
       const gathering = await this.prisma.investigation.update({
@@ -122,6 +219,14 @@ export class InvestigationsService {
         where: { id: investigationId },
         data: { status: 'ANALYZING', evidence: bundle as never },
       });
+      await this.saveEvidenceItems(
+        investigationId,
+        buildProvisionalItems(bundle),
+      );
+      await this.appendStep(investigationId, 'prompt', {
+        query: gathering.query,
+        promptVersion: 1,
+      });
 
       const tools = createTools({
         prisma: this.prisma,
@@ -140,6 +245,10 @@ export class InvestigationsService {
         buildInvestigationPrompt(gathering.query, bundle),
       );
       this.logger.warn(`investigation ${investigationId} verdict=${verdict}`);
+      await this.appendStep(investigationId, 'status', {
+        status: 'COMPLETED',
+        verdict,
+      });
       await this.prisma.investigation.update({
         where: { id: investigationId },
         data: { status: 'COMPLETED', llmResponse: answer },
@@ -148,6 +257,9 @@ export class InvestigationsService {
       this.logger.error(
         `Investigation ${investigationId} failed: ${(err as Error).message}`,
       );
+      await this.appendStep(investigationId, 'status', {
+        status: 'FAILED',
+      }).catch(() => {});
       await this.prisma.investigation
         .update({ where: { id: investigationId }, data: { status: 'FAILED' } })
         .catch(() => {});

@@ -6,7 +6,10 @@ import { LLM_SERVICE } from '../llm/llm.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { EvidenceBuilderService } from './evidence-builder.service';
-import { InvestigationsService } from './investigations.service';
+import {
+  buildProvisionalItems,
+  InvestigationsService,
+} from './investigations.service';
 
 describe('InvestigationsService', () => {
   let service: InvestigationsService;
@@ -17,6 +20,11 @@ describe('InvestigationsService', () => {
       update: jest.fn(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
+    },
+    evidenceItem: { createMany: jest.fn() },
+    investigationStep: {
+      count: jest.fn().mockResolvedValue(0),
+      create: jest.fn(),
     },
   };
   const evidence = { buildEvidence: jest.fn() };
@@ -67,6 +75,37 @@ describe('InvestigationsService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('buildProvisionalItems', () => {
+    it('itemizes every bundle section with provisional grades', () => {
+      const items = buildProvisionalItems({
+        code: [
+          {
+            file: 'src/pay.ts',
+            startLine: 38,
+            endLine: 95,
+            content: 'async retry() {}',
+            symbol: 'Repo.retry',
+          },
+        ],
+        commits: [{ sha: 'abc', message: 'fix', author: 'a', date: 'd' }],
+        diffs: [{ sha: 'abc', file: 'src/pay.ts', patch: '@@' }],
+        prs: [{ number: 142, title: 't', body: 'b' }],
+        issues: [{ number: 141, title: 'i', body: null }],
+        historyNote: null,
+      });
+
+      expect(items).toHaveLength(5);
+      expect(items[0]).toMatchObject({
+        kind: 'code',
+        ref: 'src/pay.ts:38',
+        grade: 'supported',
+      });
+      expect(items[1]).toMatchObject({ kind: 'commit', ref: 'abc' });
+      expect(items[3]).toMatchObject({ kind: 'pr', ref: '#142' });
+      expect(items.every((i) => i.grade === 'supported')).toBe(true);
+    });
   });
 
   describe('create', () => {
@@ -141,6 +180,60 @@ describe('InvestigationsService', () => {
         'ANALYZING',
         'COMPLETED',
       ]);
+    });
+
+    it('persists evidence items and run steps on COMPLETED', async () => {
+      prisma.userRepository.findUnique.mockResolvedValue({
+        repository: { status: 'READY' },
+      });
+      prisma.investigation.create.mockResolvedValue(row);
+      prisma.investigation.update.mockImplementation(
+        (args: { where: unknown; data: Record<string, unknown> }) =>
+          Promise.resolve({ ...row, ...args.data }),
+      );
+      evidence.buildEvidence.mockResolvedValue({
+        code: [
+          {
+            file: 'src/pay.ts',
+            startLine: 1,
+            endLine: 2,
+            content: 'x',
+            symbol: null,
+          },
+        ],
+        commits: [],
+        diffs: [{ sha: 'abc', file: 'src/pay.ts', patch: 'y'.repeat(600) }],
+        prs: [],
+        issues: [],
+        historyNote: null,
+      });
+      llm.complete.mockResolvedValue('because reasons [repo.ts:1]');
+
+      await service.create('u1', { repositoryId: 'r1', query: 'why?' });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const itemCalls = prisma.evidenceItem.createMany.mock
+        .calls as unknown[][][];
+      const payload = itemCalls[0]?.[0] as unknown as {
+        data: { kind: string; ref: string; excerpt: string }[];
+      };
+      expect(payload.data).toHaveLength(2);
+      expect(payload.data[0]).toMatchObject({
+        kind: 'code',
+        ref: 'src/pay.ts:1',
+      });
+      expect(payload.data[1]).toMatchObject({
+        kind: 'diff',
+        ref: 'abc:src/pay.ts',
+      });
+      for (const item of payload.data) {
+        expect(item.excerpt.length).toBeLessThanOrEqual(500);
+      }
+      const kinds = prisma.investigationStep.create.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { kind: string } }).data.kind,
+      );
+      expect(kinds).toEqual(['prompt', 'status']);
     });
 
     it('marks FAILED when evidence gathering throws', async () => {

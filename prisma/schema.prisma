@@ -85,7 +85,11 @@ model Investigation {
 
   status      InvestigationStatus @default(PENDING)
   evidence    Json?
+  result      Json?
   llmResponse String?
+
+  evidenceItems EvidenceItem[]
+  steps         InvestigationStep[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -98,5 +102,61 @@ enum InvestigationStatus {
   GATHERING_EVIDENCE
   ANALYZING
   COMPLETED
+  PARTIAL
+  INSUFFICIENT
   FAILED
+}
+
+model EvidenceItem {
+  id              String        @id @default(uuid())
+  investigationId String
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+
+  kind    EvidenceKind
+  ref     String
+  excerpt String         @db.VarChar(500)
+  grade   EvidenceGrade
+
+  createdAt DateTime @default(now())
+
+  @@index([investigationId])
+  @@map("evidence_items")
+}
+
+enum EvidenceKind {
+  code
+  commit
+  diff
+  pr
+  issue
+}
+
+enum EvidenceGrade {
+  confirmed
+  supported
+  inferred
+}
+
+model InvestigationStep {
+  id              String        @id @default(uuid())
+  investigationId String
+  investigation   Investigation @relation(fields: [investigationId], references: [id], onDelete: Cascade)
+
+  seq     Int
+  kind    StepKind
+  payload Json
+
+  createdAt DateTime @default(now())
+
+  @@unique([investigationId, seq])
+  @@index([investigationId])
+  @@map("investigation_steps")
+}
+
+enum StepKind {
+  prompt
+  tool
+  verdict
+  repair
+  status
 }

@@ -19,12 +19,27 @@ export class InvestigationResponseDto {
   targetSymbol!: string | null;
 
   @ApiProperty({
-    enum: ['PENDING', 'GATHERING_EVIDENCE', 'ANALYZING', 'COMPLETED', 'FAILED'],
+    enum: [
+      'PENDING',
+      'GATHERING_EVIDENCE',
+      'ANALYZING',
+      'COMPLETED',
+      'PARTIAL',
+      'INSUFFICIENT',
+      'FAILED',
+    ],
   })
   status!: InvestigationStatus;
 
   @ApiPropertyOptional({ type: () => EvidenceBundle })
   evidence!: EvidenceBundle | null;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Graded contract result (Why/Change shape), set on terminal runs',
+  })
+  result!: Record<string, unknown> | null;
 
   @ApiPropertyOptional()
   llmResponse!: string | null;

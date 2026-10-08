@@ -227,7 +227,7 @@ export class RepositoriesService implements OnModuleInit {
             errorMessage: null,
             stage: null,
             progress: 100,
-            sizeBytes: await this.git.dirSizeBytes(repo.localPath),
+            sizeBytes: await this.git.measureAndEnforceSize(repo.localPath),
           },
         });
 
@@ -250,7 +250,7 @@ export class RepositoriesService implements OnModuleInit {
           errorMessage: null,
           stage: null,
           progress: 100,
-          sizeBytes: await this.git.dirSizeBytes(repo.localPath),
+          sizeBytes: await this.git.measureAndEnforceSize(repo.localPath),
         },
       });
     } catch (err) {

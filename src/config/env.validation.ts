@@ -42,7 +42,8 @@ export const envValidationSchema = Joi.object({
     .required()
     .description('32-byte hex key for AES-256-GCM token encryption'),
   REPOS_BASE_PATH: Joi.string().default('./data/repos'),
-  GIT_CLONE_TIMEOUT_MS: Joi.number().default(120000),
+  GIT_CLONE_TIMEOUT_MS: Joi.number().default(600000),
+  MAX_REPO_BYTES: Joi.number().default(2147483648),
   ANALYSIS_MAX_TREE_DEPTH: Joi.number().default(5),
   ANALYSIS_MAX_TREE_ENTRIES: Joi.number().default(200),
   ANALYSIS_MAX_FILE_BYTES: Joi.number().default(262144),
@@ -88,6 +89,7 @@ export type EnvVariables = {
   LLM_TIMEOUT_MS: number;
   REPOS_BASE_PATH: string;
   GIT_CLONE_TIMEOUT_MS: number;
+  MAX_REPO_BYTES: number;
   ANALYSIS_MAX_TREE_DEPTH: number;
   ANALYSIS_MAX_TREE_ENTRIES: number;
   ANALYSIS_MAX_FILE_BYTES: number;

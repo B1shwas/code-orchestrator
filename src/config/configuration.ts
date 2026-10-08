@@ -41,7 +41,8 @@ export default () => ({
   },
   repos: {
     basePath: process.env.REPOS_BASE_PATH ?? './data/repos',
-    cloneTimeoutMs: parseInt(process.env.GIT_CLONE_TIMEOUT_MS ?? '120000', 10),
+    cloneTimeoutMs: parseInt(process.env.GIT_CLONE_TIMEOUT_MS ?? '600000', 10),
+    maxBytes: parseInt(process.env.MAX_REPO_BYTES ?? '2147483648', 10),
   },
   analysis: {
     maxTreeDepth: parseInt(process.env.ANALYSIS_MAX_TREE_DEPTH ?? '5', 10),

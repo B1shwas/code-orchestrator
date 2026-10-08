@@ -27,7 +27,7 @@ describe('RepositoriesService', () => {
     buildCanonicalPath: jest.fn().mockReturnValue('/tmp/repos/octocat/hello'),
     isCloned: jest.fn(),
     clone: jest.fn(),
-    dirSizeBytes: jest.fn().mockResolvedValue(1024),
+    measureAndEnforceSize: jest.fn().mockResolvedValue(1024),
   };
   const users = { getDecryptedGithubToken: jest.fn() };
   const github = { getRepo: jest.fn(), listUserRepos: jest.fn() };
@@ -260,6 +260,33 @@ describe('RepositoriesService', () => {
         data: {
           status: 'ERROR',
           errorMessage: 'boom',
+          stage: null,
+          progress: null,
+        },
+      });
+    });
+
+    it('marks ERROR when the clone exceeds the size quota', async () => {
+      mockConnectDeps();
+      prisma.repository.updateMany.mockResolvedValue({ count: 1 });
+      prisma.repository.findUniqueOrThrow.mockResolvedValue(repoRow);
+      git.isCloned.mockResolvedValue(false);
+      git.clone.mockResolvedValue(undefined);
+      git.measureAndEnforceSize.mockRejectedValue(
+        new Error('Repository exceeds size limit (999 > 100 bytes)'),
+      );
+
+      await service.connect('user-1', { owner: 'octocat', name: 'hello' });
+      await flushBackground();
+
+      expect(git.measureAndEnforceSize).toHaveBeenCalledWith(
+        '/tmp/repos/octocat/hello',
+      );
+      expect(prisma.repository.update).toHaveBeenCalledWith({
+        where: { id: 'repo-1' },
+        data: {
+          status: 'ERROR',
+          errorMessage: 'Repository exceeds size limit (999 > 100 bytes)',
           stage: null,
           progress: null,
         },

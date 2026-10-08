@@ -113,3 +113,20 @@ export function validateChange(
 export function formatContractErrors(errors: ContractError[]): string {
   return errors.map((e) => `${e.path || '(root)'}: ${e.message}`).join('; ');
 }
+
+// Pulls the first {...} object out of a reply (fences tolerated). Returns
+// undefined when there is no balanced-looking object to validate.
+export function extractJsonObject(text: string): unknown {
+  const unfenced = text
+    .replace(/```json\s*/i, '')
+    .replace(/```/g, '')
+    .trim();
+  const start = unfenced.indexOf('{');
+  const end = unfenced.lastIndexOf('}');
+  if (start === -1 || end <= start) return undefined;
+  try {
+    return JSON.parse(unfenced.slice(start, end + 1)) as unknown;
+  } catch {
+    return undefined;
+  }
+}

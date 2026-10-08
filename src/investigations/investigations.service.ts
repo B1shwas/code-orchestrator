@@ -23,7 +23,27 @@ import { GithubService } from '../auth/github.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { createTools } from './agent/tools';
 import { runAgentLoop } from './agent/runner';
-import { collectKnownRefs, gradeItems } from './agent/verifier.service';
+import {
+  collectKnownRefs,
+  gradeContractClaims,
+  gradeItems,
+  worstStatus,
+} from './agent/verifier.service';
+import type { KnownRefs } from './agent/verifier.service';
+import {
+  extractJsonObject,
+  formatContractErrors,
+  validateChange,
+  validateWhy,
+} from './contracts';
+import type {
+  ChangeResult,
+  ContractValidation,
+  TerminalStatus,
+  WhyResult,
+} from './contracts';
+import { formatInstructions } from './prompts/answer-format.prompt';
+import type { InvestigationMode } from './prompts/answer-format.prompt';
 
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
@@ -35,6 +55,7 @@ function toResponse(row: Investigation): InvestigationResponseDto {
     query: row.query,
     targetFile: row.targetFile,
     targetSymbol: row.targetSymbol,
+    mode: row.mode,
     status: row.status,
     evidence: (row.evidence ?? null) as unknown as EvidenceBundle | null,
     result: (row.result ?? null) as unknown as Record<string, unknown> | null,
@@ -101,6 +122,20 @@ export function buildProvisionalItems(
   return items;
 }
 
+export function parseContract(
+  mode: InvestigationMode,
+  text: string,
+): ContractValidation<WhyResult> | ContractValidation<ChangeResult> {
+  const json = extractJsonObject(text);
+  if (json === undefined) {
+    return {
+      ok: false,
+      errors: [{ path: '', message: 'no JSON object found' }],
+    };
+  }
+  return mode === 'why' ? validateWhy(json) : validateChange(json);
+}
+
 @Injectable()
 export class InvestigationsService {
   private readonly logger = new Logger(InvestigationsService.name);
@@ -113,6 +148,23 @@ export class InvestigationsService {
     private readonly analysis: AnalysisService,
     @Inject(LLM_SERVICE) private readonly llm: LlmService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // Runs execute as in-process promises, so any non-terminal row at boot
+    // is orphaned by definition — its worker died with the previous
+    // process and will never resolve. Fail them so clients stop polling.
+    const orphaned = await this.prisma.investigation.updateMany({
+      where: {
+        status: { in: ['PENDING', 'GATHERING_EVIDENCE', 'ANALYZING'] },
+      },
+      data: { status: 'FAILED' },
+    });
+    if (orphaned.count > 0) {
+      this.logger.warn(
+        `Marked ${orphaned.count} orphaned investigations as FAILED`,
+      );
+    }
+  }
 
   async create(
     userId: string,
@@ -136,6 +188,7 @@ export class InvestigationsService {
         query: dto.query.trim(),
         targetFile: dto.targetFile?.trim() || null,
         targetSymbol: dto.targetSymbol?.trim() || null,
+        mode: dto.mode ?? 'why',
         status: 'PENDING',
       },
     });
@@ -201,6 +254,36 @@ export class InvestigationsService {
     });
   }
 
+  // Grades parsed contract claims and folds the outcome into a status.
+  // Claim grades proposed by the model are capped, never raised; any
+  // downgrade caps the run at PARTIAL — the stored result stays truthful.
+  private settleContract(
+    mode: InvestigationMode,
+    bundle: EvidenceBundle,
+    known: KnownRefs,
+    parsed: ContractValidation<WhyResult> | ContractValidation<ChangeResult>,
+    answer: string,
+  ): { result: WhyResult | ChangeResult | null; status: TerminalStatus } {
+    if (!parsed.ok) return { result: null, status: 'PARTIAL' };
+    if (mode === 'why') {
+      const why = parsed.value as WhyResult;
+      const graded = gradeContractClaims(
+        bundle,
+        known,
+        why.causal_chain,
+        answer,
+      );
+      if (graded.downgraded) {
+        return {
+          result: { ...why, causal_chain: graded.claims },
+          status: 'PARTIAL',
+        };
+      }
+      return { result: why, status: 'COMPLETED' };
+    }
+    return { result: parsed.value, status: 'COMPLETED' };
+  }
+
   private async run(investigationId: string): Promise<void> {
     try {
       const gathering = await this.prisma.investigation.update({
@@ -232,8 +315,13 @@ export class InvestigationsService {
         analysis: this.analysis,
       });
 
-      const basePrompt = buildInvestigationPrompt(gathering.query, bundle);
-      const { answer, status } = await runAgentLoop(
+      const mode: InvestigationMode =
+        gathering.mode === 'change' ? 'change' : 'why';
+      const basePrompt =
+        `${buildInvestigationPrompt(gathering.query, bundle)}\n\n` +
+        formatInstructions(mode);
+      const known = collectKnownRefs(bundle);
+      const loop = await runAgentLoop(
         this.llm,
         tools,
         {
@@ -241,20 +329,49 @@ export class InvestigationsService {
           repositoryId: gathering.repositoryId,
         },
         basePrompt,
-        collectKnownRefs(bundle),
+        known,
       );
-      this.logger.warn(`investigation ${investigationId} status=${status}`);
+      // Contract gate: parse + validate, one repair quoting the schema
+      // errors, then settle (claim grades capped, result persisted).
+      let parsed = parseContract(mode, loop.answer);
+      if (!parsed.ok) {
+        await this.appendStep(investigationId, 'repair', {
+          errors: parsed.errors,
+        });
+        const repaired = await this.llm.complete(
+          `${basePrompt}\n\nYour previous reply was not valid JSON: ${formatContractErrors(parsed.errors)}. Reply again with exactly one JSON object and no other text.`,
+        );
+        parsed = parseContract(mode, repaired);
+      }
+      const settled = this.settleContract(
+        mode,
+        bundle,
+        known,
+        parsed,
+        loop.answer,
+      );
+      const finalStatus = worstStatus(loop.status, settled.status);
+      this.logger.warn(
+        `investigation ${investigationId} status=${finalStatus} ` +
+          `contract=${settled.result ? 'valid' : 'invalid'}`,
+      );
       // Grade the provisional items against the final answer: only cited
       // rows persist, quoted ones confirmed — the table holds claims with
       // receipts, never the raw bundle.
       await this.saveEvidenceItems(
         investigationId,
-        gradeItems(buildProvisionalItems(bundle), answer),
+        gradeItems(buildProvisionalItems(bundle), loop.answer),
       );
-      await this.appendStep(investigationId, 'status', { status });
+      await this.appendStep(investigationId, 'status', {
+        status: finalStatus,
+      });
       await this.prisma.investigation.update({
         where: { id: investigationId },
-        data: { status, llmResponse: answer },
+        data: {
+          status: finalStatus,
+          llmResponse: loop.answer,
+          result: settled.result as never,
+        },
       });
     } catch (err) {
       this.logger.error(

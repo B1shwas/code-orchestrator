@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -29,4 +30,13 @@ export class CreateInvestigationDto {
   @IsString()
   @MaxLength(300)
   targetSymbol?: string;
+
+  @ApiPropertyOptional({
+    enum: ['why', 'change'],
+    default: 'why',
+    description: 'Answer contract: causal chain (why) or blast radius (change)',
+  })
+  @IsOptional()
+  @IsIn(['why', 'change'])
+  mode?: 'why' | 'change';
 }

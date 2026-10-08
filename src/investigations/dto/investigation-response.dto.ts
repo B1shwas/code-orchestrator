@@ -18,6 +18,9 @@ export class InvestigationResponseDto {
   @ApiPropertyOptional()
   targetSymbol!: string | null;
 
+  @ApiProperty({ enum: ['why', 'change'] })
+  mode!: string;
+
   @ApiProperty({
     enum: [
       'PENDING',

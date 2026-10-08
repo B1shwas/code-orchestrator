@@ -9,6 +9,7 @@ import { EvidenceBuilderService } from './evidence-builder.service';
 import {
   buildProvisionalItems,
   InvestigationsService,
+  parseContract,
 } from './investigations.service';
 
 describe('InvestigationsService', () => {
@@ -18,6 +19,7 @@ describe('InvestigationsService', () => {
     investigation: {
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
     },
@@ -49,12 +51,61 @@ describe('InvestigationsService', () => {
     query: 'why retry?',
     targetFile: null,
     targetSymbol: null,
+    mode: 'why',
     status: 'PENDING',
     evidence: null,
+    result: null,
     llmResponse: null,
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
   };
+
+  const commitSha = 'c0ffee'.padEnd(40, '0');
+  const goldenBundle = {
+    code: [
+      {
+        file: 'src/pay.ts',
+        startLine: 38,
+        endLine: 95,
+        content: 'async retryPayment() { return 2; }',
+        symbol: 'Repo.retryPayment',
+      },
+    ],
+    commits: [
+      {
+        sha: commitSha,
+        message: 'fix: cap retries at 2',
+        author: 'a',
+        date: 'd',
+      },
+    ],
+    diffs: [],
+    prs: [],
+    issues: [],
+    historyNote: null,
+  };
+  const goldenJson = JSON.stringify({
+    summary:
+      'Summary: retries are capped at two. The loop async retryPayment() { return 2; } at [src/pay.ts:38] came from fix: cap retries at 2, see [commit:c0ffee]. Evidence mapping done. Limits unknown. ' +
+      'grounding detail. '.repeat(20),
+    causal_chain: [
+      {
+        claim:
+          'The loop async retryPayment() { return 2; } caps retries per fix: cap retries at 2 [commit:c0ffee] and [src/pay.ts:38].',
+        evidence: ['[commit:c0ffee]', '[src/pay.ts:38]'],
+        grade: 'confirmed',
+      },
+    ],
+    timeline: [
+      {
+        at: '2024-03-15',
+        event: 'Cap introduced per fix: cap retries at 2',
+        ref: '[commit:c0ffee]',
+      },
+    ],
+    residual_uncertainty: ['Backoff behavior unknown.'],
+    status: 'COMPLETED',
+  });
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -144,6 +195,7 @@ describe('InvestigationsService', () => {
           query: 'why retry?',
           targetFile: null,
           targetSymbol: null,
+          mode: 'why',
           status: 'PENDING',
         },
       });
@@ -158,33 +210,8 @@ describe('InvestigationsService', () => {
         (args: { where: unknown; data: Record<string, unknown> }) =>
           Promise.resolve({ ...row, ...args.data }),
       );
-      evidence.buildEvidence.mockResolvedValue({
-        code: [
-          {
-            file: 'src/pay.ts',
-            startLine: 38,
-            endLine: 95,
-            content: 'async retryPayment() { return 2; }',
-            symbol: 'Repo.retryPayment',
-          },
-        ],
-        commits: [
-          {
-            sha: 'c0ffee'.padEnd(40, '0'),
-            message: 'fix: cap retries at 2',
-            author: 'a',
-            date: 'd',
-          },
-        ],
-        diffs: [],
-        prs: [],
-        issues: [],
-        historyNote: null,
-      });
-      llm.complete.mockResolvedValue(
-        'Summary: cap confirmed. The loop async retryPayment() { return 2; } at [src/pay.ts:38] came from fix: cap retries at 2, see [commit:c0ffee]. Evidence mapping done. Limits unknown. ' +
-          'grounding detail. '.repeat(20),
-      );
+      evidence.buildEvidence.mockResolvedValue(goldenBundle);
+      llm.complete.mockResolvedValue(goldenJson);
 
       await service.create('u1', { repositoryId: 'r1', query: 'why?' });
       await new Promise((resolve) => setImmediate(resolve));
@@ -198,6 +225,64 @@ describe('InvestigationsService', () => {
         'ANALYZING',
         'COMPLETED',
       ]);
+      const updates = prisma.investigation.update.mock.calls as unknown[][];
+      const terminal = updates[updates.length - 1]?.[0] as {
+        data: { result: { summary: string } | null };
+      };
+      expect(terminal.data.result).not.toBeNull();
+      if (terminal.data.result) {
+        expect(terminal.data.result.summary).toContain('retries are capped');
+      }
+    });
+
+    it('repairs invalid JSON once and completes', async () => {
+      prisma.userRepository.findUnique.mockResolvedValue({
+        repository: { status: 'READY' },
+      });
+      prisma.investigation.create.mockResolvedValue(row);
+      prisma.investigation.update.mockImplementation(
+        (args: { where: unknown; data: Record<string, unknown> }) =>
+          Promise.resolve({ ...row, ...args.data }),
+      );
+      evidence.buildEvidence.mockResolvedValue(goldenBundle);
+      llm.complete
+        .mockResolvedValueOnce(
+          'Summary: cap confirmed. The loop async retryPayment() { return 2; } at [src/pay.ts:38] came from fix: cap retries at 2, see [commit:c0ffee]. Evidence mapping done. Limits unknown. ' +
+            'grounding detail. '.repeat(20),
+        )
+        .mockResolvedValueOnce(goldenJson);
+
+      await service.create('u1', { repositoryId: 'r1', query: 'why?' });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const kinds = prisma.investigationStep.create.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { kind: string } }).data.kind,
+      );
+      expect(kinds).toContain('repair');
+      const statuses = prisma.investigation.update.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { status: string } }).data.status,
+      );
+      expect(statuses[statuses.length - 1]).toBe('COMPLETED');
+    });
+
+    it('fails orphaned non-terminal investigations on boot', async () => {
+      prisma.investigation.updateMany.mockResolvedValue({ count: 2 });
+
+      await service.onModuleInit();
+
+      expect(prisma.investigation.updateMany).toHaveBeenCalledWith({
+        where: {
+          status: { in: ['PENDING', 'GATHERING_EVIDENCE', 'ANALYZING'] },
+        },
+        data: { status: 'FAILED' },
+      });
+    });
+
+    it('parses contracts by mode', () => {
+      expect(parseContract('why', goldenJson).ok).toBe(true);
+      expect(parseContract('why', 'no json here').ok).toBe(false);
+      expect(parseContract('change', goldenJson).ok).toBe(false);
     });
 
     it('marks INSUFFICIENT when the answer never grounds', async () => {
@@ -286,9 +371,8 @@ describe('InvestigationsService', () => {
       const kinds = prisma.investigationStep.create.mock.calls.map(
         (c: unknown[]) => (c[0] as { data: { kind: string } }).data.kind,
       );
-      expect(kinds).toEqual(['prompt', 'status']);
+      expect(kinds).toEqual(['prompt', 'repair', 'status']);
     });
-
     it('marks FAILED when evidence gathering throws', async () => {
       prisma.userRepository.findUnique.mockResolvedValue({
         repository: { status: 'READY' },

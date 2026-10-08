@@ -59,6 +59,12 @@ describe('extractCitations', () => {
       extractCitations('did [commit:8a91f2] via [PR #142] at [src/pay.ts:38]'),
     ).toEqual({ shas: ['8a91f2'], prs: [142], files: ['src/pay.ts'] });
   });
+
+  it('does not match across JSON array boundaries', () => {
+    expect(
+      extractCitations('{"evidence": ["[commit:8a91f2]", "[src/pay.ts:38]"]}'),
+    ).toEqual({ shas: ['8a91f2'], prs: [], files: ['src/pay.ts'] });
+  });
 });
 
 describe('verifyAnswer', () => {

@@ -82,6 +82,7 @@ model Investigation {
   query        String
   targetFile   String?
   targetSymbol String?
+  mode         String  @default("why")
 
   status      InvestigationStatus @default(PENDING)
   evidence    Json?

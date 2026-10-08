@@ -8,7 +8,7 @@ export const MIN_GROUNDED_SOURCES = 2;
 
 const COMMIT_CITE_RE = /\[commit:([0-9a-f]{4,40})\]/gi;
 const PR_CITE_RE = /\[PR #(\d+)\]/g;
-const FILE_CITE_RE = /\[([^:\]\n]+):\d+\]/g;
+const FILE_CITE_RE = /\[([^:",\]\n]+):\d+\]/g;
 
 const QUOTE_WINDOW = 30;
 const QUOTE_STEP = 15;
@@ -76,6 +76,19 @@ export function harvestRefs(text: string, known: KnownRefs): void {
   }
 }
 
+export function shaResolves(sha: string, known: KnownRefs): boolean {
+  return known.shas.some((s) => s.startsWith(sha));
+}
+
+export function prResolves(n: number, known: KnownRefs): boolean {
+  return known.prs.includes(n);
+}
+
+export function fileResolves(f: string, known: KnownRefs): boolean {
+  const fl = f.toLowerCase();
+  return known.files.some((k) => k === f || k.toLowerCase() === fl);
+}
+
 export function verifyAnswer(
   answer: string,
   known: KnownRefs,
@@ -89,8 +102,7 @@ export function verifyAnswer(
 
   for (const sha of new Set(cites.shas)) {
     const ok =
-      known.shas.some((s) => s.startsWith(sha)) ||
-      loweredShown.some((t) => t.includes(sha));
+      shaResolves(sha, known) || loweredShown.some((t) => t.includes(sha));
     if (ok) grounded.add(`sha:${sha}`);
     else {
       fabricated = true;
@@ -99,7 +111,7 @@ export function verifyAnswer(
   }
   for (const n of new Set(cites.prs)) {
     const ok =
-      known.prs.includes(n) || loweredShown.some((t) => t.includes(`#${n}`));
+      prResolves(n, known) || loweredShown.some((t) => t.includes(`#${n}`));
     if (ok) grounded.add(`pr:${n}`);
     else {
       fabricated = true;
@@ -109,8 +121,7 @@ export function verifyAnswer(
   for (const f of new Set(cites.files)) {
     const fl = f.toLowerCase();
     const ok =
-      known.files.some((k) => k === f || k.toLowerCase() === fl) ||
-      loweredShown.some((t) => t.includes(fl));
+      fileResolves(f, known) || loweredShown.some((t) => t.includes(fl));
     if (ok) grounded.add(`file:${fl}`);
     else {
       fabricated = true;
@@ -218,6 +229,93 @@ export function gradeItems<T extends GradeableItem>(
   return out;
 }
 
+export type ContractClaimIn = {
+  claim: string;
+  evidence: string[];
+  grade: ClaimGrade;
+};
+
+// Source text behind one citation, for quote checks: commit messages,
+// patches, file contents, PR/issue bodies. Null when the ref is unknown.
+function excerptForCitation(
+  bundle: EvidenceBundle,
+  cite: { sha?: string; pr?: number; file?: string },
+): string | null {
+  if (cite.sha) {
+    const c = bundle.commits.find((x) => x.sha.toLowerCase() === cite.sha);
+    if (c) return c.message;
+    const d = bundle.diffs.find((x) =>
+      x.sha.toLowerCase().startsWith(cite.sha ?? ''),
+    );
+    if (d) return d.patch;
+    return null;
+  }
+  if (cite.pr !== undefined) {
+    const p = bundle.prs.find((x) => x.number === cite.pr);
+    if (p) return `${p.title}\n${p.body ?? ''}`;
+    const i = bundle.issues.find((x) => x.number === cite.pr);
+    if (i) return `${i.title}\n${i.body ?? ''}`;
+    return null;
+  }
+  if (cite.file) {
+    const c = bundle.code.find(
+      (x) => x.file === cite.file || x.file.toLowerCase() === cite.file,
+    );
+    return c ? c.content : null;
+  }
+  return null;
+}
+
+// Grades parsed contract claims and caps inflated grades. Returns the
+// (possibly downgraded) claims plus whether any claim lost a grade — the
+// caller folds that into the final status.
+export function gradeContractClaims<T extends ContractClaimIn>(
+  bundle: EvidenceBundle,
+  known: KnownRefs,
+  claims: T[],
+  answer: string,
+): { claims: T[]; downgraded: boolean } {
+  let downgraded = false;
+  const out = claims.map((claim) => {
+    const cites = extractCitations(claim.evidence.join(' '));
+    const pairs: { ok: boolean; quoted: boolean }[] = [];
+    for (const sha of new Set(cites.shas)) {
+      const ok = shaResolves(sha, known);
+      const excerpt = ok ? (excerptForCitation(bundle, { sha }) ?? '') : '';
+      pairs.push({ ok, quoted: ok && isQuoted(excerpt, answer) });
+    }
+    for (const n of new Set(cites.prs)) {
+      const ok = prResolves(n, known);
+      const excerpt = excerptForCitation(bundle, { pr: n }) ?? '';
+      pairs.push({ ok, quoted: ok && isQuoted(excerpt, answer) });
+    }
+    for (const f of new Set(cites.files)) {
+      const ok = fileResolves(f, known);
+      const excerpt = excerptForCitation(bundle, { file: f }) ?? '';
+      pairs.push({ ok, quoted: ok && isQuoted(excerpt, answer) });
+    }
+    const cited = pairs.length > 0 && pairs.every((p) => p.ok);
+    const quoted = pairs.some((p) => p.quoted);
+    const capped = capClaimGrade(claim.grade, cited, quoted);
+    if (capped !== claim.grade) downgraded = true;
+    return { ...claim, grade: capped };
+  });
+  return { claims: out, downgraded };
+}
+
+const STATUS_RANK: Record<TerminalStatus, number> = {
+  COMPLETED: 0,
+  PARTIAL: 1,
+  INSUFFICIENT: 2,
+};
+
+export function worstStatus(
+  a: TerminalStatus,
+  b: TerminalStatus,
+): TerminalStatus {
+  return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
+}
+
 @Injectable()
 export class VerifierService {
   collectKnownRefs(bundle: EvidenceBundle): KnownRefs {
@@ -245,5 +343,18 @@ export class VerifierService {
     answer: string,
   ): (T & { grade: EvidenceGrade })[] {
     return gradeItems(items, answer);
+  }
+
+  gradeContractClaims<T extends ContractClaimIn>(
+    bundle: EvidenceBundle,
+    known: KnownRefs,
+    claims: T[],
+    answer: string,
+  ): { claims: T[]; downgraded: boolean } {
+    return gradeContractClaims(bundle, known, claims, answer);
+  }
+
+  worstStatus(a: TerminalStatus, b: TerminalStatus): TerminalStatus {
+    return worstStatus(a, b);
   }
 }

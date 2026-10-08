@@ -1,4 +1,9 @@
-import { formatContractErrors, validateChange, validateWhy } from './contracts';
+import {
+  extractJsonObject,
+  formatContractErrors,
+  validateChange,
+  validateWhy,
+} from './contracts';
 
 const whyGood = {
   summary: 'The retry cap prevents duplicate payments.',
@@ -89,5 +94,22 @@ describe('validateChange', () => {
   it('rejects non-object input at the root', () => {
     const r = validateChange('just prose');
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('extractJsonObject', () => {
+  it('pulls fenced JSON out of prose', () => {
+    expect(extractJsonObject('Here:\n```json\n{"a": 1}\n```\ndone')).toEqual({
+      a: 1,
+    });
+  });
+
+  it('pulls a bare object out of surrounding text', () => {
+    expect(extractJsonObject('prefix {"a": 1} suffix')).toEqual({ a: 1 });
+  });
+
+  it('returns undefined when there is no object', () => {
+    expect(extractJsonObject('just prose, no braces')).toBeUndefined();
+    expect(extractJsonObject('{"unclosed": true')).toBeUndefined();
   });
 });

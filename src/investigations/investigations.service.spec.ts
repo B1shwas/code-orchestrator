@@ -159,12 +159,63 @@ describe('InvestigationsService', () => {
           Promise.resolve({ ...row, ...args.data }),
       );
       evidence.buildEvidence.mockResolvedValue({
+        code: [
+          {
+            file: 'src/pay.ts',
+            startLine: 38,
+            endLine: 95,
+            content: 'async retryPayment() { return 2; }',
+            symbol: 'Repo.retryPayment',
+          },
+        ],
+        commits: [
+          {
+            sha: 'c0ffee'.padEnd(40, '0'),
+            message: 'fix: cap retries at 2',
+            author: 'a',
+            date: 'd',
+          },
+        ],
+        diffs: [],
+        prs: [],
+        issues: [],
+        historyNote: null,
+      });
+      llm.complete.mockResolvedValue(
+        'Summary: cap confirmed. The loop async retryPayment() { return 2; } at [src/pay.ts:38] came from fix: cap retries at 2, see [commit:c0ffee]. Evidence mapping done. Limits unknown. ' +
+          'grounding detail. '.repeat(20),
+      );
+
+      await service.create('u1', { repositoryId: 'r1', query: 'why?' });
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const statuses = prisma.investigation.update.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { status: string } }).data.status,
+      );
+      expect(statuses).toEqual([
+        'GATHERING_EVIDENCE',
+        'ANALYZING',
+        'COMPLETED',
+      ]);
+    });
+
+    it('marks INSUFFICIENT when the answer never grounds', async () => {
+      prisma.userRepository.findUnique.mockResolvedValue({
+        repository: { status: 'READY' },
+      });
+      prisma.investigation.create.mockResolvedValue(row);
+      prisma.investigation.update.mockImplementation(
+        (args: { where: unknown; data: Record<string, unknown> }) =>
+          Promise.resolve({ ...row, ...args.data }),
+      );
+      evidence.buildEvidence.mockResolvedValue({
         code: [],
         commits: [],
         diffs: [],
         prs: [],
         issues: [],
-        historyNote: 'none',
+        historyNote: null,
       });
       llm.complete.mockResolvedValue('because reasons [repo.ts:1]');
 
@@ -178,7 +229,7 @@ describe('InvestigationsService', () => {
       expect(statuses).toEqual([
         'GATHERING_EVIDENCE',
         'ANALYZING',
-        'COMPLETED',
+        'INSUFFICIENT',
       ]);
     });
 
@@ -207,7 +258,9 @@ describe('InvestigationsService', () => {
         issues: [],
         historyNote: null,
       });
-      llm.complete.mockResolvedValue('because reasons [repo.ts:1]');
+      llm.complete.mockResolvedValue(
+        'Found it at [src/pay.ts:1] and confirmed at [src/pay.ts:2].',
+      );
 
       await service.create('u1', { repositoryId: 'r1', query: 'why?' });
       await new Promise((resolve) => setImmediate(resolve));

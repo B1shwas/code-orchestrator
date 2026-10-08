@@ -1,21 +1,16 @@
 import { Logger } from '@nestjs/common';
 import { LlmService } from '../../llm/llm.service';
+import type { TerminalStatus } from '../contracts';
 import { describeTools, executeTool } from './tools';
 import { AgentTool, ToolContext } from './tool.types';
+import { harvestRefs, KnownRefs, verifyAnswer } from './verifier.service';
 
 export const MAX_AGENT_ITERATIONS = 6;
 const MAX_TOOL_OUTPUT_CHARS = 4_000;
 
-const CITATION_RE = /\[(commit:[0-9a-f]{4,40}|PR #\d+|[^[\]]+:\d+)\]/;
 const TOOL_CALL_RE = /^TOOL:\s*([a-z_]+)\s*(\{[\s\S]*\})?\s*$/m;
 
-export type AgentVerdict = 'SUFFICIENT' | 'INSUFFICIENT';
-
 const logger = new Logger('AgentRunner');
-
-export function judgeAnswer(answer: string): AgentVerdict {
-  return CITATION_RE.test(answer) ? 'SUFFICIENT' : 'INSUFFICIENT';
-}
 
 function clip(output: unknown): string {
   const text = typeof output === 'string' ? output : JSON.stringify(output);
@@ -29,31 +24,45 @@ export async function runAgentLoop(
   tools: AgentTool[],
   ctx: ToolContext,
   basePrompt: string,
-): Promise<{ answer: string; verdict: AgentVerdict; iterations: number }> {
+  known: KnownRefs,
+): Promise<{
+  answer: string;
+  status: TerminalStatus;
+  iterations: number;
+}> {
   let prompt =
     `${basePrompt}\n\nYou may call one tool per reply with a line like:\n` +
     `TOOL: <name> {"arg": "value"}\n\nTOOLS:\n${describeTools(tools)}\n\n` +
     `If the evidence above already answers the question, answer directly with citations instead.`;
+  const shown: string[] = [basePrompt];
+  let reminded = false;
 
   for (let i = 1; i <= MAX_AGENT_ITERATIONS; i++) {
     const reply = await llm.complete(prompt);
     const call = reply.match(TOOL_CALL_RE);
 
     if (!call) {
-      const verdict = judgeAnswer(reply);
-      if (verdict === 'SUFFICIENT' || i === MAX_AGENT_ITERATIONS) {
-        logger.warn(`agent done iterations=${i} verdict=${verdict}`);
-        return { answer: reply, verdict, iterations: i };
+      const check = verifyAnswer(reply, known, shown);
+      if (check.status === 'COMPLETED') {
+        logger.warn(`agent done iterations=${i} status=COMPLETED`);
+        return { answer: reply, status: 'COMPLETED', iterations: i };
       }
+      if (reminded || i === MAX_AGENT_ITERATIONS) {
+        logger.warn(
+          `agent done iterations=${i} status=${check.status} reasons="${check.reasons.join('; ')}"`,
+        );
+        return { answer: reply, status: check.status, iterations: i };
+      }
+      reminded = true;
       prompt +=
-        '\n\nReminder: every factual claim needs a citation as ' +
-        '[commit:<sha>], [PR #<n>], or [<file>:<line>]. Answer again with citations.';
+        `\n\nYour answer needs work: ${check.reasons.join('; ')}. ` +
+        `Revise with the required structure and only grounded citations, or call a tool for more evidence.`;
       continue;
     }
 
     if (i === MAX_AGENT_ITERATIONS) {
-      logger.warn(`agent done iterations=${i} verdict=INSUFFICIENT`);
-      return { answer: reply, verdict: 'INSUFFICIENT', iterations: i };
+      logger.warn(`agent done iterations=${i} status=INSUFFICIENT`);
+      return { answer: reply, status: 'INSUFFICIENT', iterations: i };
     }
 
     const name = call[1] ?? '';
@@ -66,7 +75,10 @@ export async function runAgentLoop(
     }
     const output = await executeTool(tools, ctx, name, args);
     logger.warn(`agent tool name="${name}" iteration=${i}`);
-    prompt += `\n\nTOOL RESULT (${name}):\n${clip(output)}\n\nContinue: call another tool or answer with citations.`;
+    const clipped = clip(output);
+    shown.push(clipped);
+    harvestRefs(clipped, known);
+    prompt += `\n\nTOOL RESULT (${name}):\n${clipped}\n\nContinue: call another tool or answer with citations.`;
   }
 
   throw new Error('agent loop exhausted without returning');

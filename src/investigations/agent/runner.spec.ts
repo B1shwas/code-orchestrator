@@ -1,6 +1,7 @@
 import { LlmService } from '../../llm/llm.service';
-import { judgeAnswer, runAgentLoop } from './runner';
+import { runAgentLoop } from './runner';
 import { AgentTool, ToolContext } from './tool.types';
+import { KnownRefs } from './verifier.service';
 
 const ctx: ToolContext = { userId: 'u1', repositoryId: 'r1' };
 const tools: AgentTool[] = [
@@ -22,29 +23,37 @@ function fakeLlm(replies: string[]): {
   return { service: { complete }, complete };
 }
 
-describe('judgeAnswer', () => {
-  it('accepts each citation shape', () => {
-    expect(judgeAnswer('fixed in [commit:abc1234]')).toBe('SUFFICIENT');
-    expect(judgeAnswer('see [PR #42]')).toBe('SUFFICIENT');
-    expect(judgeAnswer('at [src/pay.ts:38]')).toBe('SUFFICIENT');
-    expect(judgeAnswer('probably the retry logic')).toBe('INSUFFICIENT');
-  });
-});
+const FULL_SHA = '8a91f2'.padEnd(40, '0');
+const KNOWN: KnownRefs = {
+  shas: [FULL_SHA],
+  files: ['src/pay.ts'],
+  prs: [142],
+};
+const EMPTY_KNOWN: KnownRefs = { shas: [], files: [], prs: [] };
+
+function padded(text: string): string {
+  return `${text} ${'grounding detail. '.repeat(20)}`;
+}
+
+const GOLDEN = padded(
+  'Summary: retries are capped. How it works: the loop at [src/pay.ts:38] stops after two tries, introduced in [commit:8a91f2]. Evidence mapping: code shows the cap, the commit message records the motive. Limits: unknown whether backoff applies.',
+);
 
 describe('runAgentLoop', () => {
-  it('returns a cited answer immediately', async () => {
-    const { service } = fakeLlm(['done in [commit:abc1234]']);
-    const r = await runAgentLoop(service, tools, ctx, 'Q');
-    expect(r).toMatchObject({ verdict: 'SUFFICIENT', iterations: 1 });
+  it('returns a verified answer immediately', async () => {
+    const { service } = fakeLlm([GOLDEN]);
+    const r = await runAgentLoop(service, tools, ctx, 'Q', KNOWN);
+    expect(r).toMatchObject({ status: 'COMPLETED', iterations: 1 });
   });
 
   it('executes a requested tool then answers', async () => {
     const { service, complete } = fakeLlm([
       'TOOL: search_code {"query": "retry"}',
-      'found it in [src/pay.ts:38]',
+      GOLDEN,
     ]);
-    const r = await runAgentLoop(service, tools, ctx, 'Q');
+    const r = await runAgentLoop(service, tools, ctx, 'Q', KNOWN);
     expect(r.iterations).toBe(2);
+    expect(r.status).toBe('COMPLETED');
     expect(complete).toHaveBeenCalledTimes(2);
     const secondPrompt = String(complete.mock.calls[1]?.[0] ?? '');
     expect(secondPrompt).toContain('hit for retry');
@@ -54,17 +63,24 @@ describe('runAgentLoop', () => {
     const { service, complete } = fakeLlm(
       Array<string>(10).fill('TOOL: search_code {"query": "x"}'),
     );
-    const r = await runAgentLoop(service, tools, ctx, 'Q');
-    expect(r).toMatchObject({ verdict: 'INSUFFICIENT', iterations: 6 });
+    const r = await runAgentLoop(service, tools, ctx, 'Q', EMPTY_KNOWN);
+    expect(r).toMatchObject({ status: 'INSUFFICIENT', iterations: 6 });
     expect(complete).toHaveBeenCalledTimes(6);
   });
 
-  it('re-prompts once on an uncited answer', async () => {
-    const { service } = fakeLlm([
+  it('re-prompts once on a thin answer', async () => {
+    const { service } = fakeLlm(['maybe the retry logic', GOLDEN]);
+    const r = await runAgentLoop(service, tools, ctx, 'Q', KNOWN);
+    expect(r).toMatchObject({ status: 'COMPLETED', iterations: 2 });
+  });
+
+  it('gives up after one reminder instead of burning the budget', async () => {
+    const { service, complete } = fakeLlm([
       'maybe the retry logic',
-      'it is retry in [src/pay.ts:38]',
+      'still vague, no citations here',
     ]);
-    const r = await runAgentLoop(service, tools, ctx, 'Q');
-    expect(r).toMatchObject({ verdict: 'SUFFICIENT', iterations: 2 });
+    const r = await runAgentLoop(service, tools, ctx, 'Q', KNOWN);
+    expect(r).toMatchObject({ status: 'INSUFFICIENT', iterations: 2 });
+    expect(complete).toHaveBeenCalledTimes(2);
   });
 });

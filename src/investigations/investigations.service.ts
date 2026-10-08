@@ -23,6 +23,7 @@ import { GithubService } from '../auth/github.service';
 import { AnalysisService } from '../analysis/analysis.service';
 import { createTools } from './agent/tools';
 import { runAgentLoop } from './agent/runner';
+import { collectKnownRefs, gradeItems } from './agent/verifier.service';
 
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 100;
@@ -219,10 +220,6 @@ export class InvestigationsService {
         where: { id: investigationId },
         data: { status: 'ANALYZING', evidence: bundle as never },
       });
-      await this.saveEvidenceItems(
-        investigationId,
-        buildProvisionalItems(bundle),
-      );
       await this.appendStep(investigationId, 'prompt', {
         query: gathering.query,
         promptVersion: 1,
@@ -235,23 +232,29 @@ export class InvestigationsService {
         analysis: this.analysis,
       });
 
-      const { answer, verdict } = await runAgentLoop(
+      const basePrompt = buildInvestigationPrompt(gathering.query, bundle);
+      const { answer, status } = await runAgentLoop(
         this.llm,
         tools,
         {
           userId: gathering.userId,
           repositoryId: gathering.repositoryId,
         },
-        buildInvestigationPrompt(gathering.query, bundle),
+        basePrompt,
+        collectKnownRefs(bundle),
       );
-      this.logger.warn(`investigation ${investigationId} verdict=${verdict}`);
-      await this.appendStep(investigationId, 'status', {
-        status: 'COMPLETED',
-        verdict,
-      });
+      this.logger.warn(`investigation ${investigationId} status=${status}`);
+      // Grade the provisional items against the final answer: only cited
+      // rows persist, quoted ones confirmed — the table holds claims with
+      // receipts, never the raw bundle.
+      await this.saveEvidenceItems(
+        investigationId,
+        gradeItems(buildProvisionalItems(bundle), answer),
+      );
+      await this.appendStep(investigationId, 'status', { status });
       await this.prisma.investigation.update({
         where: { id: investigationId },
-        data: { status: 'COMPLETED', llmResponse: answer },
+        data: { status, llmResponse: answer },
       });
     } catch (err) {
       this.logger.error(
